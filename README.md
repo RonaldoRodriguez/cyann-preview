@@ -396,6 +396,10 @@ Los issues son bienvenidos para discutir sintaxis, semántica, o features nuevas
 
 ---
 
-## Licencia
+## Nota
 
 Por definir. El proyecto está en fase de diseño y es probable que partes del lenguaje cambien de forma incompatible entre versiones. Si te interesa usarlo o extenderlo, abrí un issue primero para coordinar.
+
+## Licencia
+
+Este proyecto está bajo la Licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
