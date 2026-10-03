@@ -112,6 +112,99 @@ region {
 
 El analizador semántico hace *escape analysis* básico: si un valor alocado dentro de una región se intenta guardar en un slot de nivel exterior, produce error de compilación. Los `return` dentro de una región también restauran la arena antes de salir, así que devolver un valor alocado adentro de la región es seguro —el valor se copia fuera antes de que el `restore` ocurra.
 
+Aquí va la sección para pegar en el README. Va después de la sección "Pattern matching" (o donde prefieras, yo la pondría justo después de "Closures", porque un método no es más que un closure con receiver):
+
+---
+
+## Métodos
+
+cyann soporta métodos definidos sobre structs nominales usando una sintaxis de receiver entre corchetes. El receiver se escribe antes de `func` y el struct al que pertenece el método:
+```cyann
+    type Person struct {
+        name string
+        age  int
+    }
+
+    [Person]
+    func greet() {
+        print("hola, soy ")
+        print(self.name)
+        print(" y tengo ")
+        print_int(self.age)
+        println(" años")
+    }
+
+    [Person]
+    func get_age() int {
+        return self.age
+    }
+
+    [Person]
+    func set_age(n int) {
+        self.age = n
+    }
+```
+Dentro del cuerpo del método, `self` es una variable implícita de tipo `Person` que apunta al struct receptor. Podés leer sus campos (`self.name`, `self.age`) y mutarlos (`self.age = n`). El nombre `self` está reservado dentro de un método: no podés declarar un parámetro con ese nombre.
+
+### Invocación
+
+Un método se invoca con la sintaxis de punto sobre una instancia:
+```cyann
+    var p = Person { name: "Ronaldo", age: 30 }
+    p.greet()
+    var edad int = p.get_age()
+    p.set_age(31)
+```
+El compilador desugara `p.get_age()` a una llamada directa `get_age(p)` sin allocación intermedia. Los métodos son tan baratos como las funciones libres a las que se reducen.
+
+### Reglas
+
+- El receiver debe ser un **struct nominal**. No se admiten receivers sobre tipos anónimos, primitivos, arrays, punteros, ni funciones.
+- Un struct puede tener cualquier cantidad de métodos, con cualquier combinación de parámetros y tipo de retorno.
+- El nombre del método puede coincidir con el nombre de un campo. Si lo hace, **el campo gana**: `p.name` accede al campo, no al método. Si querés llamar al método, usá un nombre distinto.
+- Los métodos no participan del sistema de sobrecarga. No podés declarar dos métodos con el mismo nombre sobre el mismo struct.
+- `self` siempre apunta al struct, nunca se copia. Aunque el método no mute nada, `self` es un puntero y el acceso a sus campos es un dereferenciado.
+
+### Method values
+
+Un método sin paréntesis se convierte en un **method value**: un closure que captura el receptor y puede invocarse más tarde.
+```cyann
+    func apply_method() int {
+        var c = Counter { value: 10 }
+        var f = c.bump      // method value: closure que captura c
+        var x = f()         // 11
+        var y = f()         // 12
+        return x + y        // 23
+    }
+```
+El binding es **estático**: `f` captura el `Counter` que existía al momento de crear el closure, no la variable `c`. Si después reasignás `c = otro_counter`, `f` sigue operando sobre el original. Es el comportamiento que esperarías de Go o Rust, no el `this` dinámico de JavaScript.
+
+El method value se implementa con un thunk hoisteado que extrae `self` del entorno del closure y llama al método real. No hay reflection ni dispatch dinámico por nombre. La resolución del método ocurre en tiempo de compilación.
+
+### Interacción con funciones libres
+
+Un método puede llamarse como una función libre usando el nombre del struct:
+```cyann
+    var q = Person { name: "Z", age: 50 }
+    var edad int = get_age(q)   // equivalente a q.get_age()
+```
+El compilador mangla el nombre real del método internamente (por ejemplo `get_age__SP`), pero ese detalle nunca es visible al programador. Desde el lenguaje, `get_age` es una función que toma un `Person` como primer argumento y puede invocarse tanto con la sintaxis de punto como con la sintaxis funcional.
+
+### Cuándo usar métodos
+
+Los métodos son una herramienta de organización, no de polimorfismo. cyann no tiene herencia, ni interfaces, ni vtables. Un método sobre `Person` no puede redefinirse sobre un tipo derivado — simplemente no hay tipos derivados. Si necesitás comportamiento compartido entre structs distintos, usá funciones libres que tomen el struct como parámetro, o pasá callbacks.
+
+La ventaja del método es la ergonomía: `p.greet()` se lee mejor que `greet(p)` cuando el primer argumento es el sujeto de la operación. La desventaja potencial es la ambigüedad campo/método, que se resuelve con la regla "campo gana". En la práctica, mantener nombres distintos para campos y métodos es una buena disciplina y evita sorpresas.
+
+### Ejemplo completo
+
+El archivo `examples/methods.cyn` cubre todos los casos: métodos básicos, métodos que mutan, métodos con argumentos y retorno, métodos sobre literales, method values con estado compartido, y llamadas por nombre de struct. Corrélo con:
+```bash
+    bun src/run.ts examples/methods.cyn
+```
+
+para ver los 8 checks de la suite de métodos.
+
 ### Cajas de captura
 
 Cuando un lambda captura una variable del scope envolvente, el analizador marca esa variable como `boxed`. El codegen la coloca en el heap (una caja de `sizeOfType` bytes) y el lambda accede a ella vía el `__env`. Esto permite que mutaciones dentro del lambda se reflejen en el scope exterior y viceversa, como esperaría alguien viniendo de JavaScript o Python, pero sin la ambigüedad de un `this` dinámico.
