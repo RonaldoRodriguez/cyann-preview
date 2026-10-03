@@ -205,6 +205,8 @@ El archivo `examples/methods.cyn` cubre todos los casos: métodos básicos, mét
 
 para ver los 8 checks de la suite de métodos.
 
+---
+
 ### Cajas de captura
 
 Cuando un lambda captura una variable del scope envolvente, el analizador marca esa variable como `boxed`. El codegen la coloca en el heap (una caja de `sizeOfType` bytes) y el lambda accede a ella vía el `__env`. Esto permite que mutaciones dentro del lambda se reflejen en el scope exterior y viceversa, como esperaría alguien viniendo de JavaScript o Python, pero sin la ambigüedad de un `this` dinámico.
