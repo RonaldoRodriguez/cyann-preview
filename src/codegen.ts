@@ -987,7 +987,7 @@ export class ExpressionCompiler {
       const baseValueType = target.base.type as MathType;
       const baseType = target.resolvedBaseType ?? getStructType(baseValueType);
       if (!baseType) throw new Error('El incremento requiere un campo de struct');
-      const field = baseType.fields.find(c => c.name === target.fieldName);
+      const field = baseType.fields.find((c: any) => c.name === target.fieldName);
       if (!field) throw new Error(`Campo '${target.fieldName}' no existe en '${baseType.name}'`);
       this.compileValue(target.base);
       const base = this.fresh('inc_struct_base', 'i32'); this.b.setLocal(base);
