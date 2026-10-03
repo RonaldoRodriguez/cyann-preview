@@ -1,0 +1,17 @@
+# Normaliza fin de línea en el repo (LF) sin importar la plataforma del dev.
+* text=auto eol=lf
+
+# Excepciones: los .ps1 son de Windows, se quedan con CRLF para no
+# romper PowerShell viejo.
+*.ps1 text eol=crlf
+
+# Binarios: git no los debe tocar.
+*.wasm binary
+*.png binary
+*.jpg binary
+*.ico binary
+bun.lock binary
+
+# Archivos sin extensión que son scripts
+run-all.sh text eol=lf
+.githooks/* text eol=lf
