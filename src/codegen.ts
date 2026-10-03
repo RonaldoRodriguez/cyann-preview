@@ -10,6 +10,7 @@ import {
   StatementNode, FunctionDefNode, VarConstNode, ShortVarDeclNode,
   AssignNode, IfNode, ForNode, ForInNode, ReturnNode, ExpressionStmtNode,
   ImportDeclNode, BreakNode, ContinueNode, SwitchNode, RegionNode,
+  MultiDeclNode,
 } from './parser';
 import {
   sizeOfType, typesEqual, semanticToWasmType, maxArithmeticType,
@@ -18,7 +19,7 @@ import {
 import { eliminateDeadFunctions, eliminateDeadImports, eliminateDeadStrings } from './dce';
 
 export type CompileResult = MathType | 'void';
-
+//  public compileFunction(fn: FunctionDefNode): void {
 const HEAP_PAGES = 16;
 const PAGE_SIZE  = 65536;
 const LOG2_PAGE_SIZE = 16;
@@ -1569,13 +1570,37 @@ export class CodeGenerator {
 
       case 'return': {
         const r = stmt as ReturnNode;
-        if (r.value) ec.compile(r.value);
+        for (const v of r.values) ec.compile(v);
 
         for (let i = this._regionStack.length - 1; i >= 0; i--) {
           b.getLocal(this._regionStack[i]);
           b.callByName(RT_RESTORE);
         }
         b.return_();
+        break;
+      }
+
+            case 'multi_decl': {
+        const md = stmt as MultiDeclNode;
+        const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
+        if (!returnTypes || !md.uniqueNames ||
+            md.uniqueNames.length !== returnTypes.length) {
+          throw new Error('multi_decl sin resolver (semantic no rellenó uniqueNames/returnTypes)');
+        }
+
+        // Reservar un local por cada nombre, con su tipo WASM.
+        for (let i = 0; i < md.uniqueNames.length; i++) {
+          b.addLocal(md.uniqueNames[i], semanticToWasmType(returnTypes[i]));
+        }
+
+        // Compilar el call. Deja N valores en la pila: [v0, v1, ..., vN-1]
+        // con v_{N-1} arriba.
+        ec.compile(md.expr);
+
+        // Pop en orden inverso: el último local recibe el top-of-stack.
+        for (let i = md.uniqueNames.length - 1; i >= 0; i--) {
+          b.setLocal(md.uniqueNames[i]);
+        }
         break;
       }
 
@@ -1862,7 +1887,7 @@ export class CodeGenerator {
     throw new Error(`LValue no soportado: ${target.kind}`);
   }
 
-  public compileFunction(fn: FunctionDefNode): void {
+    public compileFunction(fn: FunctionDefNode): void {
     const isLambda = fn.name.startsWith('__lambda_');
     const needsEnv = isLambda || this.envFunctions.has(fn.name);
 
@@ -1872,7 +1897,7 @@ export class CodeGenerator {
     const userParamNames = fn.params.map(p => (p as any).uniqueName ?? p.name);
     const paramNames = needsEnv ? ['__env', ...userParamNames] : userParamNames;
 
-    const returnWasm = fn.returnType ? [semanticToWasmType(fn.returnType)] : [];
+    const returnWasm = fn.returnTypes.map(t => semanticToWasmType(t));
     const wasmName = fn.name;
 
     const prevRegionStack = this._regionStack;
@@ -1912,7 +1937,7 @@ export class CodeGenerator {
       this._regionStack = prevRegionStack;
     }
   }
-
+// case 'return': {
   private emitZero(b: FunctionIRBuilder, t: MathType): void {
     if (typeof t !== 'string') {
       b.i32Const(isNullablePointerType(t) ? -1 : 0);

@@ -1,4 +1,4 @@
-import { ProgramNode, StatementNode, FunctionDefNode, ImportDeclNode } from './parser';
+import { ProgramNode, StatementNode, FunctionDefNode, ImportDeclNode, MultiDeclNode } from './parser';
 import {
   MathNode, MathType, FunctionType, StructType, TypeRegistry,
   FunctionLiteralNode, ClosureNode, CaptureAccessNode,
@@ -101,7 +101,7 @@ interface CaptureFrame {
 export class SemanticAnalyzer {
   private scopeControl: ScopeControl;
   private typeRegistry: TypeRegistry;
-  private currentReturnType: MathType | null = null;
+  private currentReturnTypes: MathType[] = [];
   private _structCache = new Map<string, StructType>();
 
   private currentLevel = 0;
@@ -149,8 +149,6 @@ export class SemanticAnalyzer {
       this.scopeControl.declareFunction(b.name, b.name, fnType, true);
     }
   }
-
-  // ─── Escape analysis primitives ───────────────────────────────────
 
   private isHeapType(t: MathType): boolean {
     if (t === 'string') return true;
@@ -230,8 +228,6 @@ export class SemanticAnalyzer {
     return false;
   }
 
-  // ─── Análisis de capturas (pre-pass) ──────────────────────────────
-
   private currentCapturedNames(): Set<string> | null {
     return this.capturedNamesStack.length > 0
       ? this.capturedNamesStack[this.capturedNamesStack.length - 1]
@@ -298,6 +294,10 @@ export class SemanticAnalyzer {
           visitExpr(stmt.expr);
           declare(stmt.name);
           return;
+        case 'multi_decl':
+          visitExpr(stmt.expr);
+          for (const n of stmt.names) declare(n);
+          return;
         case 'assign':
           visitExpr(stmt.target);
           visitExpr(stmt.expr);
@@ -350,7 +350,7 @@ export class SemanticAnalyzer {
           popScope();
           return;
         case 'return':
-          if (stmt.value) visitExpr(stmt.value);
+          for (const v of stmt.values) visitExpr(v);
           return;
         case 'expression_stmt':
           visitExpr(stmt.expr);
@@ -363,8 +363,6 @@ export class SemanticAnalyzer {
 
     return captured;
   }
-
-  // ─── Entrada ──────────────────────────────────────────────────────
 
   public analyzeProgram(program: ProgramNode): void {
     this.currentLevel = 0;
@@ -381,7 +379,7 @@ export class SemanticAnalyzer {
     this.collectStructs(program.body);
     this.collectFunctions(program.body);
 
-        for (const stmt of program.body) this.analyzeStatement(stmt);
+    for (const stmt of program.body) this.analyzeStatement(stmt);
 
     for (const h of this.hoistedFunctions) program.body.push(h);
     this.hoistedFunctions = [];
@@ -392,7 +390,7 @@ export class SemanticAnalyzer {
       if (s.kind !== 'type_alias') continue;
       this.typeAliases.set(s.name, s.targetType);
     }
-  } // (thunkFn as any).__analyzed = true;
+  }
 
   private collectStructs(stmts: StatementNode[]): void {
     for (const s of stmts) {
@@ -436,9 +434,7 @@ export class SemanticAnalyzer {
       const allParamTypes = receiverType
         ? [receiverType, ...userParamTypes]
         : userParamTypes;
-      const returnTypes = fn.returnType === null
-        ? []
-        : [this.resolveType(fn.returnType)];
+      const returnTypes = fn.returnTypes.map(t => this.resolveType(t));
       const fnType: FunctionType = {
         kind: 'function',
         paramTypes: allParamTypes,
@@ -453,8 +449,6 @@ export class SemanticAnalyzer {
       this.scopeControl.declareFunction(fn.name, mangledName, fnType, true);
     }
   }
-
-  // ─── Registro de métodos ──────────────────────────────────────────
 
   private registerMethod(
     receiverName: string,
@@ -476,8 +470,6 @@ export class SemanticAnalyzer {
   ): FunctionOverload | undefined {
     return this.methodsByStruct.get(receiverName)?.get(methodName);
   }
-
-  // ─── Statements ───────────────────────────────────────────────────
 
   public analyzeStatement(stmt: StatementNode): void {
     switch (stmt.kind) {
@@ -538,6 +530,39 @@ export class SemanticAnalyzer {
         if (isBoxed) (stmt as any).boxed = true;
         this.slotLevels.set(uniqueName, this.currentLevel);
         this.checkEscape(stmt.expr, this.currentLevel, `:= '${stmt.name}'`);
+        break;
+      }
+
+      case 'multi_decl': {
+        const md = stmt as MultiDeclNode;
+        const firstType = this.resolveType(this.analyzeExpression(md.expr));
+
+        // El call debe haber poblado returnTypes con >= 2 valores.
+        const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
+        if (!returnTypes || returnTypes.length === 0) {
+          throw new Error(
+            `multi-declaración requiere una llamada con múltiples valores ` +
+            `de retorno; se obtuvo un valor de tipo ${this.typeName(firstType)}`
+          );
+        }
+        if (returnTypes.length !== md.names.length) {
+          throw new Error(
+            `multi-declaración de ${md.names.length} nombres pero ` +
+            `la expresión retorna ${returnTypes.length} valores`
+          );
+        }
+
+        md.uniqueNames = [];
+        for (let i = 0; i < md.names.length; i++) {
+          const uniqueName = this.scopeControl.declare(
+            md.names[i], returnTypes[i], true, false, false
+          );
+          md.uniqueNames.push(uniqueName);
+          this.slotLevels.set(uniqueName, this.currentLevel);
+        }
+
+        // El call en sí ya fue analizado; los valores retornados son
+        // referencias del heap que pertenecen al nivel actual.
         break;
       }
 
@@ -666,25 +691,35 @@ export class SemanticAnalyzer {
         break;
 
       case 'return': {
-        const actualType = stmt.value
-          ? this.resolveType(this.analyzeExpression(stmt.value))
-          : null;
+        const actualTypes = stmt.values.map(
+          v => this.resolveType(this.analyzeExpression(v))
+        );
+        const expected = this.currentReturnTypes;
 
-        if (this.currentReturnType === null) {
-          if (actualType !== null) throw new Error('La función no debe retornar un valor');
+        if (expected.length === 0) {
+          if (actualTypes.length > 0) {
+            throw new Error('La función no debe retornar valores');
+          }
         } else {
-          if (actualType === null) throw new Error(`Se esperaba retornar ${this.typeName(this.currentReturnType)}`);
-          if (!this.isAssignableType(actualType, this.currentReturnType)) {
-            if (!(actualType === 'null' && typeof this.currentReturnType !== 'string')) {
-              throw new Error(
-                `Tipo de retorno incorrecto: se esperaba ${this.typeName(this.currentReturnType)}, ` +
-                `se obtuvo ${this.typeName(actualType)}`
-              );
+          if (actualTypes.length !== expected.length) {
+            throw new Error(
+              `Se esperaban ${expected.length} valores de retorno, ` +
+              `se recibieron ${actualTypes.length}`
+            );
+          }
+          for (let i = 0; i < expected.length; i++) {
+            if (!this.isAssignableType(actualTypes[i], expected[i])) {
+              if (!(actualTypes[i] === 'null' && typeof expected[i] !== 'string')) {
+                throw new Error(
+                  `Tipo de retorno ${i} incorrecto: se esperaba ` +
+                  `${this.typeName(expected[i])}, se obtuvo ${this.typeName(actualTypes[i])}`
+                );
+              }
             }
           }
         }
 
-        if (stmt.value) this.checkEscape(stmt.value, 0, 'return');
+        for (const v of stmt.values) this.checkEscape(v, 0, 'return');
         break;
       }
 
@@ -694,10 +729,7 @@ export class SemanticAnalyzer {
     }
   }
 
-  // ─── Función ──────────────────────────────────────────────────────
-
   private analyzeFunction(fn: FunctionDefNode): void {
-    // 1. Resolver el receiver si existe.
     let receiverType: StructType | null = null;
     if (fn.receiver) {
       const rt = this.resolveType(fn.receiver);
@@ -709,7 +741,6 @@ export class SemanticAnalyzer {
       receiverType = rt;
     }
 
-    // 2. Verificar que no haya un parámetro llamado `self`.
     if (receiverType) {
       for (const p of fn.params) {
         if (p.name === 'self') {
@@ -721,28 +752,23 @@ export class SemanticAnalyzer {
       }
     }
 
-    // 3. Calcular tipos completos (con receiver).
     const userParamTypes = fn.params.map(p => this.resolveType(p.type));
     const allParamTypes = receiverType
       ? [receiverType, ...userParamTypes]
       : userParamTypes;
-    const returnTypes = fn.returnType === null
-      ? []
-      : [this.resolveType(fn.returnType)];
+    const returnTypes = fn.returnTypes.map(t => this.resolveType(t));
     const fnType: FunctionType = {
       kind: 'function',
       paramTypes: allParamTypes,
       returnTypes,
     };
 
-    // 4. Mangled name.
     const sourceName = fn.name;
     const isLambda = sourceName.startsWith('__lambda_');
     const mangledName = isLambda
       ? sourceName
       : mangleFunctionName(sourceName, allParamTypes);
 
-    // 5. Declarar en scopeControl (los métodos ya fueron declarados por collectFunctions).
     if (isLambda) {
       this.scopeControl.declareFunction(sourceName, mangledName, fnType, false);
     } else if (!receiverType) {
@@ -752,17 +778,13 @@ export class SemanticAnalyzer {
     }
     (fn as any).mangledName = mangledName;
 
-    // 6. Guardar estado.
-    const prevReturn = this.currentReturnType;
+    const prevReturn = this.currentReturnTypes;
     const prevLevel = this.currentLevel;
-    this.currentReturnType = fn.returnType === null
-      ? null
-      : this.resolveType(fn.returnType);
+    this.currentReturnTypes = returnTypes;
     this.currentLevel = 0;
 
     this.scopeControl.pushScope();
 
-    // 7. Prepender `self` a fn.params si es método.
     if (receiverType) {
       const selfUnique = this.scopeControl.declare(
         'self', receiverType, true, false, false
@@ -774,11 +796,9 @@ export class SemanticAnalyzer {
       this.slotLevels.set(selfUnique, 0);
     }
 
-    // 8. Analizar capturas (con self ya en params).
     const capturedNames = this.findCapturedVars(fn.params, fn.body);
     this.capturedNamesStack.push(capturedNames);
 
-    // 9. Declarar params del usuario (saltando self).
     const userParamStart = receiverType ? 1 : 0;
     for (let i = userParamStart; i < fn.params.length; i++) {
       const param = fn.params[i];
@@ -792,28 +812,24 @@ export class SemanticAnalyzer {
       this.slotLevels.set(uniqueName, 0);
     }
 
-    // 10. Analizar cuerpo.
     for (const stmt of fn.body) this.analyzeStatement(stmt);
 
-    // 11. Verificar retorno en todos los caminos.
-    if (fn.returnType !== null && !this.allPathsReturn(fn.body)) {
+    if (fn.returnTypes.length > 0 && !this.allPathsReturn(fn.body)) {
       throw new Error(
         `La función '${sourceName}' no retorna en todos los caminos ` +
-        `(se esperaba ${this.typeName(this.currentReturnType!)})`
+        `(se esperaba${returnTypes.length > 1 ? 'n ' : ' '}` +
+        `${returnTypes.map(t => this.typeName(t)).join(', ')})`
       );
     }
 
-    // 12. Restaurar.
-    this.currentReturnType = prevReturn;
+    this.currentReturnTypes = prevReturn;
     this.currentLevel = prevLevel;
     this.scopeControl.popScope();
     this.capturedNamesStack.pop();
 
-    // 13. Renombrar al mangled final.
     fn.name = mangledName;
   }
 
-  /** Tipos que se pueden usar como expr de un switch. */
   private isComparableType(t: MathType): boolean {
     if (this.isArithmetic(t)) return true;
     if (t === 'string' || t === 'bool') return true;
@@ -823,7 +839,6 @@ export class SemanticAnalyzer {
     return false;
   }
 
-  /** Verifica que un pattern sea válido para el tipo del switch. */
   private analyzePattern(pattern: PatternNode, targetType: MathType): void {
     const t = this.resolveType(targetType);
 
@@ -890,8 +905,6 @@ export class SemanticAnalyzer {
       }
     }
   }
-
-  // ─── Expresiones ──────────────────────────────────────────────────
 
   public analyzeExpression(node: MathNode): MathType {
     switch (node.kind) {
@@ -1081,6 +1094,7 @@ export class SemanticAnalyzer {
           }
           node.name = chosen.mangledName;
           node.paramTypes = chosen.type.paramTypes;
+          node.returnTypes = chosen.type.returnTypes;
           const returnType = chosen.type.returnTypes[0];
           if (returnType === undefined) { node.type = 'void'; return 's32'; }
           node.type = returnType;
@@ -1118,7 +1132,6 @@ export class SemanticAnalyzer {
       }
 
       case 'call_indirect': {
-        // ── Prepass: `p.metodo(args)` → desugaring a `metodo__SP(p, args)`
         if (node.callee.kind === 'struct_access') {
           const sa = node.callee as StructAccessNode;
           const baseTypeRaw = this.resolveType(this.analyzeExpression(sa.base));
@@ -1153,23 +1166,21 @@ export class SemanticAnalyzer {
                   }
                 }
 
-                // Desugaring in-place: `p.foo(a, b)` → `foo__SP(p, a, b)`.
                 const newCall: any = node;
                 newCall.kind = 'call';
                 newCall.name = method.mangledName;
                 newCall.args = [sa.base, ...node.args];
                 newCall.paramTypes = method.type.paramTypes;
+                newCall.returnTypes = method.type.returnTypes;
                 newCall.type = method.type.returnTypes[0] ?? 'void';
                 return newCall.type;
               }
 
               throw new Error(`Campo '${sa.fieldName}' no existe en '${baseType.name}'`);
             }
-            // Es un campo: caer al análisis normal de call_indirect.
           }
         }
 
-        // ── Análisis normal.
         const calleeType = this.resolveType(this.analyzeExpression(node.callee));
         if (typeof calleeType !== 'object' || calleeType.kind !== 'function') {
           throw new Error('call_indirect: el callee no es de tipo función');
@@ -1210,17 +1221,17 @@ export class SemanticAnalyzer {
         const fnNode = node as FunctionLiteralNode;
 
         const paramTypes = fnNode.params.map(p => this.resolveType(p.type));
-        const returnTypes = fnNode.returnType
-          ? [this.resolveType(fnNode.returnType)]
+        const returnTypes = fnNode.returnTypes
+          ? fnNode.returnTypes.map(t => this.resolveType(t))
           : [];
         const fnType: FunctionType = { kind: 'function', paramTypes, returnTypes };
 
         const name = `__lambda_${this.lambdaCounter++}`;
         this.scopeControl.declareFunction(name, name, fnType, false);
 
-        const prevReturn = this.currentReturnType;
+        const prevReturn = this.currentReturnTypes;
         const prevLevel = this.currentLevel;
-        this.currentReturnType = fnNode.returnType ? this.resolveType(fnNode.returnType) : null;
+        this.currentReturnTypes = returnTypes;
 
         const frame: CaptureFrame = { captures: new Map() };
         this.captureStack.push(frame);
@@ -1238,21 +1249,22 @@ export class SemanticAnalyzer {
         this.scopeControl.popLambdaBoundary();
         this.captureStack.pop();
 
-        if (fnNode.returnType !== null && !this.allPathsReturn(fnNode.body as StatementNode[])) {
+        if (fnNode.returnTypes.length > 0 && !this.allPathsReturn(fnNode.body as StatementNode[])) {
           throw new Error(
             `La lambda '${name}' no retorna en todos los caminos ` +
-            `(se esperaba ${this.typeName(this.currentReturnType!)})`
+            `(se esperaba${returnTypes.length > 1 ? 'n ' : ' '}` +
+            `${returnTypes.map(t => this.typeName(t)).join(', ')})`
           );
         }
 
-        this.currentReturnType = prevReturn;
+        this.currentReturnTypes = prevReturn;
         this.currentLevel = prevLevel;
 
         this.hoistedFunctions.push({
           kind: 'function_def',
           name,
           params: fnNode.params,
-          returnType: fnNode.returnType,
+          returnTypes: fnNode.returnTypes,
           body: fnNode.body as StatementNode[],
           mangledName: name,
         });
@@ -1275,7 +1287,7 @@ export class SemanticAnalyzer {
         (node as any).captureExprs = captureExprs;
         (node as any).type = fnType;
         delete (node as any).params;
-        delete (node as any).returnType;
+        delete (node as any).returnTypes;
         delete (node as any).body;
 
         return fnType;
@@ -1336,7 +1348,6 @@ export class SemanticAnalyzer {
           );
         }
 
-        // Prioridad: campo primero.
         const field = baseType.fields.find(c => c.name === node.fieldName);
         if (field) {
           node.resolvedBaseType = baseType;
@@ -1344,7 +1355,6 @@ export class SemanticAnalyzer {
           return node.type;
         }
 
-        // Sin campo: probar como método (method value).
         if (baseType.name !== '') {
           const method = this.lookupMethod(baseType.name, node.fieldName);
           if (method) {
@@ -1402,17 +1412,6 @@ export class SemanticAnalyzer {
     }
   }
 
-  // ─── Method value ────────────────────────────────────────────────
-
-  /**
-   * Convierte `p.metodo` (sin paréntesis) en un closure que captura `p`.
-   *
-   * El closure usa un thunk hoisteado `__lambda_N` cuyo único propósito
-   * es extraer `self` del env y llamar al método real.
-   *
-   * El nodo original (`struct_access`) se muta in-place a un `closure`.
-   * La firma del method value es la del método SIN el parámetro `self`.
-   */
   private buildMethodValue(
     node: StructAccessNode,
     receiverType: StructType,
@@ -1425,7 +1424,6 @@ export class SemanticAnalyzer {
     const thunkName = `__lambda_${this.lambdaCounter++}`;
     const baseExpr = node.base;
 
-    // `self` viene de la captura 0 del env del closure.
     const selfRef: CaptureAccessNode = {
       kind: 'capture_access',
       captureIndex: 0,
@@ -1450,11 +1448,12 @@ export class SemanticAnalyzer {
       name: method.mangledName,
       args: [selfRef, ...paramRefs],
       paramTypes: fullFnType.paramTypes,
+      returnTypes: fullFnType.returnTypes,
       type: returnTypes[0] ?? 'void',
     };
 
     const thunkBody: StatementNode[] = returnTypes.length > 0
-      ? [{ kind: 'return', value: innerCall }]
+      ? [{ kind: 'return', values: [innerCall] }]
       : [{ kind: 'expression_stmt', expr: innerCall }];
 
     const thunkFn: FunctionDefNode = {
@@ -1465,23 +1464,19 @@ export class SemanticAnalyzer {
         type: t,
         uniqueName: paramUniqueNames[i],
       })),
-      returnType: returnTypes[0] ?? null,
+      returnTypes: returnTypes,
       body: thunkBody,
       mangledName: thunkName,
     };
 
-    // Marcar como ya analizado. `analyzeProgram` lo va a empujar a
-    // program.body sin re-analizarlo.
     this.hoistedFunctions.push(thunkFn);
 
-    // Firma del method value (sin self).
     const valueFnType: FunctionType = {
       kind: 'function',
       paramTypes: valueParams,
       returnTypes,
     };
 
-    // Mutar el nodo a closure.
     (node as any).kind = 'closure';
     (node as any).codeName = thunkName;
     (node as any).captures = [{
@@ -1498,8 +1493,6 @@ export class SemanticAnalyzer {
 
     return valueFnType;
   }
-
-  // ─── Helpers de tipos ─────────────────────────────────────────────
 
   private canonicalizeAnonStruct(fields: { name: string; type: MathType }[]): string {
     const key = fields.map(f => `${f.name}:${mangleType(f.type)}`).join(';');
@@ -1845,5 +1838,3 @@ export class SemanticAnalyzer {
     return false;
   }
 }
-
-// for (const stmt of program.body) this.analyzeStatement(stmt);

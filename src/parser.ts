@@ -22,15 +22,23 @@ export interface ShortVarDeclNode {
   kind: 'short_var_decl'; name: string; expr: MathNode; uniqueName?: string;
 }
 
+export interface MultiDeclNode {
+  kind: 'multi_decl';
+  names: string[];
+  expr: MathNode;
+  uniqueNames?: string[];
+}
+
 export interface AssignNode { kind: 'assign'; target: MathNode; expr: MathNode; }
 
 export interface FunctionDefNode {
   kind: 'function_def';
   name: string;
   params: { name: string; type: MathType; uniqueName?: string }[];
-  returnType: MathType | null;
+  returnTypes: MathType[];
   body: StatementNode[];
   mangledName?: string;
+  receiver?: MathType;
 }
 
 export interface StructDefNode {
@@ -82,20 +90,10 @@ export interface SwitchNode {
   exprType?: MathType;
 }
 
-export interface FunctionDefNode {
-  kind: 'function_def';
-  name: string;
-  params: { name: string; type: MathType; uniqueName?: string }[];
-  returnType: MathType | null;
-  body: StatementNode[];
-  mangledName?: string;
-  receiver?: MathType;              // ← nuevo
-}
-
 export interface RegionNode { kind: 'region'; body: StatementNode[]; }
 export interface BreakNode    { kind: 'break'; }
 export interface ContinueNode { kind: 'continue'; }
-export interface ReturnNode   { kind: 'return'; value: MathNode | null; }
+export interface ReturnNode   { kind: 'return'; values: MathNode[]; }
 export interface ExpressionStmtNode { kind: 'expression_stmt'; expr: MathNode; }
 
 export interface ImportDeclNode {
@@ -106,7 +104,7 @@ export interface ImportDeclNode {
 }
 
 export type StatementNode =
-  | VarConstNode | ShortVarDeclNode | AssignNode | FunctionDefNode | StructDefNode
+  | VarConstNode | ShortVarDeclNode | MultiDeclNode | AssignNode | FunctionDefNode | StructDefNode
   | TypeAliasNode
   | IfNode | ForNode | ForInNode | SwitchNode | RegionNode
   | BreakNode | ContinueNode | ReturnNode | ExpressionStmtNode | ImportDeclNode;
@@ -176,12 +174,10 @@ export class Parser {
   }
 
   public parseStatement(): StatementNode {
-        // ── Atributos: [host(...)] o [Tipo] (receiver de método)
     if (this.currentToken.value === '[') {
       this.advance();
       if (this.matchToken('KEYWORD', 'host')) return this.parseImportDecl();
 
-      // Receiver de método: [Person] func saludo()
       if (this.currentToken.type === 'IDENTIFIER') {
         const receiver = this.parseGoTypeName();
         this.expectToken('SYMBOL', ']');
@@ -219,6 +215,19 @@ export class Parser {
   }
 
   private parseStatementStartingWithIdentifier(name: string): StatementNode {
+    // Multi-decl con `:=`: `a, b := expr`
+    if (this.matchToken('SYMBOL', ',')) {
+      const names = [name];
+      do {
+        names.push(this.expectToken('IDENTIFIER'));
+      } while (this.matchToken('SYMBOL', ','));
+
+      this.expectToken('SYMBOL', ':=');
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      return { kind: 'multi_decl', names, expr };
+    }
+
     if (this.matchToken('SYMBOL', ':=')) {
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
@@ -277,16 +286,31 @@ export class Parser {
     return { kind: 'import_decl', module, field, name, params, returnType };
   }
 
-  private parseVarDecl(): VarConstNode {
+  private parseVarDecl(): VarConstNode | MultiDeclNode {
     this.expectToken('KEYWORD', 'var');
-    const name = this.expectToken('IDENTIFIER');
+    const firstName = this.expectToken('IDENTIFIER');
+
+    // Multi-decl: `var a, b, c = expr`
+    if (this.matchToken('SYMBOL', ',')) {
+      const names = [firstName];
+      do {
+        names.push(this.expectToken('IDENTIFIER'));
+      } while (this.matchToken('SYMBOL', ','));
+
+      this.expectToken('SYMBOL', '=');
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      return { kind: 'multi_decl', names, expr };
+    }
+
+    // Single-decl normal.
     const inferred = this.currentToken.value === '=';
     let type: MathType = 's32';
     if (!inferred) type = this.parseGoTypeName();
     let initExpr: MathNode | null = null;
     if (this.matchToken('SYMBOL', '=')) initExpr = this.parseExpression();
     this.matchToken('SYMBOL', ';');
-    return { kind: 'var_decl', name, type, initExpr, inferred };
+    return { kind: 'var_decl', name: firstName, type, initExpr, inferred };
   }
 
   private parseConstDecl(): VarConstNode {
@@ -299,6 +323,22 @@ export class Parser {
     if (this.matchToken('SYMBOL', '=')) initExpr = this.parseExpression();
     this.matchToken('SYMBOL', ';');
     return { kind: 'const_decl', name, type, initExpr, inferred, isConst: true };
+  }
+
+  private parseReturnTypes(): MathType[] {
+    if (this.matchToken('SYMBOL', '(')) {
+      const types: MathType[] = [];
+      if (this.currentToken.value !== ')') {
+        for (;;) {
+          types.push(this.parseGoTypeName());
+          if (!this.matchToken('SYMBOL', ',')) break;
+        }
+      }
+      this.expectToken('SYMBOL', ')');
+      return types;
+    }
+    if (this.isTypeStart()) return [this.parseGoTypeName()];
+    return [];
   }
 
   private parseFunctionDef(): FunctionDefNode {
@@ -318,15 +358,15 @@ export class Parser {
     const closeParenLine = this.currentToken.line;
     this.expectToken('SYMBOL', ')');
 
-    let returnType: MathType | null = null;
-    if (this.currentToken.line === closeParenLine && this.isTypeStart()) {
-      returnType = this.parseGoTypeName();
+    let returnTypes: MathType[] = [];
+    if (this.currentToken.line === closeParenLine) {
+      returnTypes = this.parseReturnTypes();
     }
     const body = this.parseBlock();
-    return { kind: 'function_def', name, params, returnType, body };
+    return { kind: 'function_def', name, params, returnTypes, body };
   }
 
-    private parseMethodDef(receiver: MathType): FunctionDefNode {
+  private parseMethodDef(receiver: MathType): FunctionDefNode {
     this.expectToken('KEYWORD', 'func');
     const name = this.expectToken('IDENTIFIER');
 
@@ -343,12 +383,12 @@ export class Parser {
     const closeParenLine = this.currentToken.line;
     this.expectToken('SYMBOL', ')');
 
-    let returnType: MathType | null = null;
-    if (this.currentToken.line === closeParenLine && this.isTypeStart()) {
-      returnType = this.parseGoTypeName();
+    let returnTypes: MathType[] = [];
+    if (this.currentToken.line === closeParenLine) {
+      returnTypes = this.parseReturnTypes();
     }
     const body = this.parseBlock();
-    return { kind: 'function_def', name, params, returnType, body, receiver };
+    return { kind: 'function_def', name, params, returnTypes, body, receiver };
   }
 
   private parseTypeOrStructDef(): StructDefNode | TypeAliasNode {
@@ -561,14 +601,19 @@ export class Parser {
 
   private parseReturnStatement(): ReturnNode {
     this.expectToken('KEYWORD', 'return');
-    let value: MathNode | null = null;
+    const values: MathNode[] = [];
     if (
       this.currentToken.value !== '}' &&
       this.currentToken.type !== 'EOF' &&
       this.currentToken.value !== ';'
-    ) value = this.parseExpression();
+    ) {
+      for (;;) {
+        values.push(this.parseExpression());
+        if (!this.matchToken('SYMBOL', ',')) break;
+      }
+    }
     this.matchToken('SYMBOL', ';');
-    return { kind: 'return', value };
+    return { kind: 'return', values };
   }
 
   private parseBlock(): StatementNode[] {
@@ -899,12 +944,12 @@ export class Parser {
       const closeParenLine = this.currentToken.line;
       this.expectToken('SYMBOL', ')');
 
-      let returnType: MathType | null = null;
-      if (this.currentToken.line === closeParenLine && this.isTypeStart()) {
-        returnType = this.parseGoTypeName();
+      let returnTypes: MathType[] = [];
+      if (this.currentToken.line === closeParenLine) {
+        returnTypes = this.parseReturnTypes();
       }
       const body = this.parseBlock();
-      node = { kind: 'function_literal', params, returnType, body } as any;
+      node = { kind: 'function_literal', params, returnTypes, body } as any;
     }
     else if (this.matchToken('KEYWORD', 'struct')) {
       this.expectToken('SYMBOL', '{');

@@ -1,7 +1,7 @@
 /**
  * Optimizer sobre el AST. Aplica constant folding a cada expresión
  * y recorre recursivamente todos los statements, incluidos los nuevos
- * `for_in`, `switch` y `region`.
+ * `for_in`, `switch`, `region` y `multi_decl`.
  */
 
 import { ProgramNode, StatementNode, IfNode } from './parser';
@@ -30,6 +30,12 @@ export class Optimizer {
           expr: foldConstants(stmt.expr)
         };
 
+      case 'multi_decl':
+        return {
+          ...stmt,
+          expr: foldConstants(stmt.expr)
+        };
+
       case 'assign':
         return {
           ...stmt,
@@ -45,7 +51,7 @@ export class Optimizer {
       case 'return':
         return {
           ...stmt,
-          value: stmt.value ? foldConstants(stmt.value) : null
+          values: stmt.values.map(v => foldConstants(v))
         };
 
       case 'if':

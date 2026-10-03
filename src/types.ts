@@ -64,10 +64,6 @@ export interface VariableNode {
   type: MathType;
   uniqueName?: string;
   isGlobal?: boolean;
-  /**
-   * Si true, el local contiene un puntero a box (no el valor).
-   * El codegen dereferencia con un load adicional tras el getLocal.
-   */
   boxed?: boolean;
 }
 
@@ -171,42 +167,21 @@ export interface IncrementNode {
   type: MathType;
 }
 
-/**
- * Función anónima en el AST (producida por el parser). El semantic
- * analyzer la reemplaza in-place por un `ClosureNode` tras analizar
- * el cuerpo y detectar las capturas.
- */
 export interface FunctionLiteralNode {
   kind: 'function_literal';
   params: { name: string; type: MathType; uniqueName?: string }[];
-  returnType: MathType | null;
+  returnTypes: MathType[];
   body: any[];
 }
 
-/**
- * Captura de una variable del scope envolvente dentro de un env
- * de closure. Se almacena en el objeto env a `8 + 8*index`.
- */
 export interface CapturedVar {
-  /** Nombre de la variable en el scope exterior (para debug). */
   name: string;
-  /** uniqueName de la variable exterior (referencia al slot real). */
   sourceUniqueName: string;
   type: MathType;
   index: number;
-  /**
-   * Si true, el local del outer ya es un pointer a box: el env
-   * reusa ese pointer en vez de allocar un box nuevo. Necesario
-   * para que mutaciones desde el lambda se reflejen en el outer.
-   */
   boxed?: boolean;
 }
 
-/**
- * Expresión que crea un closure: reserva un env en el heap, guarda
- * el `code_idx` (índice de tabla de la función hoisteada) y copia
- * las capturas. El resultado es un i32 — puntero al env.
- */
 export interface ClosureNode {
   kind: 'closure';
   codeName: string;
@@ -215,10 +190,6 @@ export interface ClosureNode {
   type: FunctionType;
 }
 
-/**
- * Acceso a una captura desde dentro del cuerpo del lambda. El codegen
- * lo traduce a `local.get __env; i32.load(8 + 8*index); load(type, 0)`.
- */
 export interface CaptureAccessNode {
   kind: 'capture_access';
   captureIndex: number;
@@ -284,10 +255,8 @@ export interface StructFieldLayout extends StructFieldInput {
 
 export interface MakeArrayNode {
   kind: 'make_array';
-  /** Sintaxis del tipo, sin resolver (puede ser un alias). */
   typeExpr: MathType;
   lengthExpr: MathNode;
-  /** Rellenados por el semantic analyzer. */
   elementType?: MathType;
   type?: DynArrayType;
 }
@@ -418,7 +387,7 @@ export class TypeRegistry {
   }
 
   hasType(name: string): boolean {
-    if (name.endsWith('*')) return true;  // pointer ad-hoc
+    if (name.endsWith('*')) return true;
     return this.types.has(name);
   }
 

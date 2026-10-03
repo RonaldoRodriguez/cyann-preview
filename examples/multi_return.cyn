@@ -1,0 +1,124 @@
+// multi_return.cyn — Multi-return.
+
+@include("lib/std.cyn")
+@include("lib/std_v2.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l); print(" got="); print_int(got); print(" want="); println_int(want) }
+}
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+
+// ─── Multi-return básico ─────────────────────────────────────────
+
+func divmod(a int, b int) (int, int) {
+    return a / b, a % b
+}
+
+// ─── Multi-return con tipos mixtos ───────────────────────────────
+
+func parse_int(s string) (int, bool) {
+    if s == "cuarenta" { return 40, true }
+    if s == "cincuenta" { return 50, true }
+    return 0, false
+}
+
+// ─── Multi-return con early returns ──────────────────────────────
+
+func classify(n int) (int, int) {
+    if n < 0 { return -1, 0 }
+    if n == 0 { return 0, 0 }
+    return n * 2, n * 3
+}
+
+// ─── Método con multi-return ─────────────────────────────────────
+
+type Point struct {
+    x int
+    y int
+}
+
+[Point]
+func coords() (int, int) {
+    return self.x, self.y
+}
+
+[Point]
+func sum_and_diff() (int, int) {
+    return self.x + self.y, self.x - self.y
+}
+
+// ─── Multi-return en contexto de asignación ──────────────────────
+
+func consume_two(a int, b int) int {
+    return a * 100 + b
+}
+
+// ─── Main ───────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — MULTI-RETURN")
+    println("══════════════════════════════════════════════")
+
+    section("1. divmod básico")
+    var q, r = divmod(17, 5)
+    check(q, 3, "divmod(17, 5) → q = 3")
+    check(r, 2, "divmod(17, 5) → r = 2")
+
+    var a, b = divmod(100, 7)
+    check(a, 14, "divmod(100, 7) → q = 14")
+    check(b, 2, "divmod(100, 7) → r = 2")
+
+    section("2. Tipos mixtos")
+    var n1, ok1 = parse_int("cuarenta")
+    check(n1, 40, "parse('cuarenta') → n = 40")
+    check_bool(ok1, true, "parse('cuarenta') → ok = true")
+
+    var n2, ok2 = parse_int("otra cosa")
+    check(n2, 0, "parse('otra cosa') → n = 0")
+    check_bool(ok2, false, "parse('otra cosa') → ok = false")
+
+    section("3. Early returns")
+    var c1, c2 = classify(-5)
+    check(c1, -1, "classify(-5) → -1")
+    check(c2, 0, "classify(-5) → 0")
+
+    var d1, d2 = classify(7)
+    check(d1, 14, "classify(7) → 14")
+    check(d2, 21, "classify(7) → 21")
+
+    section("4. Métodos con multi-return")
+    var p = Point { x: 3, y: 4 }
+    var px, py = p.coords()
+    check(px, 3, "p.coords() → x")
+    check(py, 4, "p.coords() → y")
+
+    var sm, df = p.sum_and_diff()
+    check(sm, 7, "p.sum_and_diff() → suma")
+    check(df, -1, "p.sum_and_diff() → diff")
+
+    section("5. Composición")
+    var qq, rr = divmod(consume_two(2, 3), 8)
+    check(qq, 25, "divmod(203, 8) → q = 25")
+    check(rr, 3, "divmod(203, 8) → r = 3")
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()
+
+// var a, b := divmod(100, 7)
