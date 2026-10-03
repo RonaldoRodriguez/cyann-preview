@@ -1,0 +1,112 @@
+// std.cyn — runtime mínimo para cyann sobre WASI.
+//
+// Uso:
+//     @include("std.cyn")
+//     func main() { println("hola") }
+//
+// Compilado con `cyann main.cyn main.wasm`, se ejecuta con cualquier
+// runtime WASI: wasmtime, wasmer, wasmedge, node --experimental-wasi,
+// bun, deno.
+
+// ─── Imports del host (WASI) ─────────────────────────────────────
+//
+//   fd_write(fd, iovs, iovs_len, nwritten) -> errno
+//
+// Un iovec es { buf: i32, buf_len: i32 } — 8 bytes.
+// Nosotros usamos una sola entrada, así que reservamos 8 bytes
+// una vez y la reutilizamos para cada escritura.
+
+[host("wasi_snapshot_preview1", "fd_write")]
+func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
+
+[host("wasi_snapshot_preview1", "proc_exit")]
+func _wasi_proc_exit(rval int)
+
+// ─── Buffers de scratch ─────────────────────────────────────────
+//
+// Reservamos 8 bytes para el iovec (buf_ptr + buf_len) y 4 para
+// el "nwritten". Vive para siempre, nadie los libera. Es 12 bytes
+// en total: irrelevante.
+
+var _iovec   int = arena_alloc(8)
+var _nwrite  int = arena_alloc(4)
+
+// ─── Escritura de bajo nivel ────────────────────────────────────
+
+func _write(fd int, ptr int, len int) {
+    mem_write32(_iovec + 0, ptr)
+    mem_write32(_iovec + 4, len)
+    _wasi_fd_write(fd, _iovec, 1, _nwrite)
+}
+
+// ─── API pública ────────────────────────────────────────────────
+
+func print(s string) {
+    _write(1, s, str_len(s))
+}
+
+func println(s string) {
+    print(s)
+    print("\n")
+}
+
+func eprint(s string) {
+    _write(2, s, str_len(s))
+}
+
+func eprintln(s string) {
+    eprint(s)
+    eprint("\n")
+}
+
+func print_char(c int) {
+    // Reusamos el iovec: escribimos 1 byte desde un buffer de 4
+    // bytes que también vive para siempre.
+    mem_write8(_nwrite, c)
+    _write(1, _nwrite, 1)
+}
+
+func print_int(n int) {
+    if n == 0 {
+        print_char(48)   // '0'
+        return
+    }
+    if n < 0 {
+        print_char(45)   // '-'
+        n = -n
+    }
+    region {
+        var digits [12]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        var i int = 0
+        for n > 0 {
+            digits[i] = 48 + (n % 10)
+            n = n / 10
+            i++
+        }
+        for i > 0 {
+            i--
+            print_char(digits[i])
+        }
+    }
+}
+
+func println_int(n int) {
+    print_int(n)
+    print_char(10)
+}
+
+func eprint_int(n int) {
+    // Mismo algoritmo, pero a stderr.
+    if n == 0 { _write(2, _nwrite, 0); eprint("0"); return }
+    if n < 0 { eprint("-"); n = -n }
+    region {
+        var digits [12]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        var i int = 0
+        for n > 0 { digits[i] = 48 + (n % 10); n = n / 10; i++ }
+        for i > 0 { i--; mem_write8(_nwrite, digits[i]); _write(2, _nwrite, 1) }
+    }
+}
+
+func exit(code int) {
+    _wasi_proc_exit(code)
+}

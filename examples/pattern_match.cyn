@@ -1,0 +1,165 @@
+// pattern_match.cyn — Pattern matching en switch.
+//
+//   bun src/run.ts examples/pattern_match.cyn demos/pattern_match.wasm
+//   wasmtime demos/pattern_match.wasm
+
+@include("lib/std.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); print(l); print(": got="); print_int(got); print(" want="); println_int(want) }
+}
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+
+type Point struct { x int; y int }
+
+type Wrap struct { p Point; tag int }
+
+// ─── 1. Pattern matching con wildcard y literales ───────────────
+
+func classify(n int) int {
+    switch n {
+    case 0:        return 100
+    case 1, 2, 3:  return 200
+    case _:        return 999
+    }
+    return -1
+}
+
+func session_primitives() {
+    section("1. Primitivos + wildcard")
+
+    check(classify(0), 100, "case 0")
+    check(classify(1), 200, "case 1")
+    check(classify(3), 200, "case 3")
+    check(classify(5), 999, "case _ (wildcard, no default)")
+}
+
+// ─── 2. Pattern matching sobre structs ──────────────────────────
+
+func describe(p Point) int {
+    switch p {
+    case null:                       return 0
+    case Point{x: 0, y: 0}:          return 1
+    case Point{x: 0, y: _}:          return 2
+    case Point{x: _, y: 0}:          return 3
+    case Point{x: 1, y: 1}:          return 4
+    case _:                          return 5
+    }
+    return -1
+}
+
+func session_structs() {
+    section("2. Struct patterns")
+
+    check(describe(null),          0, "null → 0")
+    check(describe(Point{x: 0, y: 0}), 1, "{0,0} → 1 (antes que {0,_})")
+    check(describe(Point{x: 0, y: 5}), 2, "{0,5} → 2 ({x:0, y:_})")
+    check(describe(Point{x: 7, y: 0}), 3, "{7,0} → 3 ({x:_, y:0})")
+    check(describe(Point{x: 1, y: 1}), 4, "{1,1} → 4")
+    check(describe(Point{x: 2, y: 3}), 5, "{2,3} → 5 (wildcard)")
+}
+
+// ─── 3. Anidamiento ─────────────────────────────────────────────
+
+func unwrap(w Wrap) int {
+    switch w {
+    case null:                              return -1
+    case Wrap{p: Point{x: 0, y: 0}, tag: _}: return 0
+    case Wrap{p: Point{x: 1, y: 1}, tag: 42}: return 42
+    case Wrap{p: _, tag: _}:                 return 99
+    }
+    return -100
+}
+
+func session_nested() {
+    section("3. Struct anidado")
+
+    check(unwrap(null), -1, "null → -1")
+    check(unwrap(Wrap{p: Point{x: 0, y: 0}, tag: 7}), 0, "{p:{0,0}, tag:_} → 0")
+    check(unwrap(Wrap{p: Point{x: 1, y: 1}, tag: 42}), 42, "{p:{1,1}, tag:42} → 42")
+    check(unwrap(Wrap{p: Point{x: 9, y: 9}, tag: 5}), 99, "wildcard → 99")
+}
+
+// ─── 4. Strings y bools ─────────────────────────────────────────
+
+func greet(name string) int {
+    switch name {
+    case "":        return 0
+    case "alice":   return 1
+    case "bob":     return 2
+    case _:         return 9
+    }
+    return -1
+}
+
+func boolCode(b bool) int {
+    switch b {
+    case true:  return 1
+    case false: return 0
+    }
+    return -1
+}
+
+func session_strings_bools() {
+    section("4. Strings y bools")
+
+    check(greet(""),      0, "'' → 0")
+    check(greet("alice"), 1, "'alice' → 1")
+    check(greet("bob"),   2, "'bob' → 2")
+    check(greet("carol"), 9, "'carol' → 9")
+    check(boolCode(true),  1, "true → 1")
+    check(boolCode(false), 0, "false → 0")
+}
+
+// ─── 5. Multi-pattern con OR ────────────────────────────────────
+
+func status(p Point) int {
+    switch p {
+    case Point{x: 0, y: 0}, Point{x: 0, y: 1}:  return 1
+    case Point{x: 1, y: 0}, Point{x: 1, y: 1}:  return 2
+    case _:                                      return 0
+    }
+    return -1
+}
+
+func session_or() {
+    section("5. Multi-pattern")
+
+    check(status(Point{x: 0, y: 0}), 1, "{0,0} → 1")
+    check(status(Point{x: 0, y: 1}), 1, "{0,1} → 1")
+    check(status(Point{x: 1, y: 0}), 2, "{1,0} → 2")
+    check(status(Point{x: 1, y: 1}), 2, "{1,1} → 2")
+    check(status(Point{x: 5, y: 5}), 0, "{5,5} → 0")
+}
+
+// ─── MAIN ───────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — PATTERN MATCHING")
+    println("══════════════════════════════════════════════")
+
+    session_primitives()
+    session_structs()
+    session_nested()
+    session_strings_bools()
+    session_or()
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

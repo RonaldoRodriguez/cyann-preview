@@ -1,0 +1,165 @@
+// pointer_identity.cyn — Identidad explícita con is_same().
+//
+//   bun src/run.ts examples/pointer_identity.cyn demos/pointer_identity.wasm
+//   wasmtime demos/pointer_identity.wasm
+//
+// Compara:
+//   ==         → equality estructural (contenido)
+//   is_same()  → identidad de puntero (mismo objeto)
+
+@include("lib/std.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); print(l); print(": got="); print_int(got); print(" want="); println_int(want) }
+}
+
+type Point struct {
+    x int
+    y int
+}
+
+// ─── 1. Structs: contenido vs identidad ─────────────────────────
+
+func session_structs() {
+    section("1. Struct: contenido vs identidad")
+
+    var p = Point{x: 1, y: 2}
+    var q = Point{x: 1, y: 2}   // mismo contenido, objeto distinto
+    var r = p                    // alias: mismo objeto
+
+    // `==` es equality estructural.
+    check_bool(p == q, true, "p == q (mismo contenido)")
+    check_bool(p == r, true, "p == r (contenido trivial)")
+
+    // `is_same` es identity de puntero.
+    check_bool(is_same(p, q), false, "!is_same(p, q) (objetos distintos)")
+    check_bool(is_same(p, r), true,  "is_same(p, r) (mismo objeto)")
+
+    // Mutación: r ve el cambio (alias), q no.
+    p.x = 99
+    check_bool(p == q, false, "tras mutar p, p != q")
+    check_bool(is_same(p, r), true, "r sigue siendo el mismo objeto que p")
+    check(q.x, 1, "q.x sin cambios")
+
+    // Dos objetos con contenido igual siguen siendo distintos.
+    var p2 = Point{x: 99, y: 2}
+    check_bool(p == p2, true, "p == p2 (mismo contenido)")
+    check_bool(is_same(p, p2), false, "!is_same(p, p2) (objetos distintos)")
+}
+
+// ─── 2. null ────────────────────────────────────────────────────
+
+func session_null() {
+    section("2. null como puntero nulo")
+
+    var p = Point{x: 1, y: 2}
+    var n Point = null
+
+    check_bool(is_same(p, null), false, "!is_same(p, null)")
+    check_bool(is_same(n, null), true,  "is_same(n, null)")
+    check_bool(is_same(null, null), true, "is_same(null, null)")
+
+    var n2 Point = null
+    check_bool(is_same(n, n2), true, "is_same(n, n2) (ambos null)")
+}
+
+// ─── 3. Strings: pointer equality ───────────────────────────────
+
+func session_strings() {
+    section("3. String: pointer equality")
+
+    var a string = "hello world"
+    var b = a       // copia del puntero
+    var c string = "hello world"  // puede o no compartir buffer
+
+    // Contenido.
+    check_bool(a == b, true, "a == b (contenido)")
+    check_bool(a == c, true, "a == c (contenido)")
+
+    // Identidad: b es el mismo pointer que a (garantizado por asignación).
+    check_bool(is_same(a, b), true, "is_same(a, b) (mismo pointer)")
+
+    // c puede o no compartir; sólo verificamos que si == contenido,
+    // is_same puede ser true o false según dedup del compilador.
+    // No hacemos assert sobre is_same(a, c).
+}
+
+// ─── 4. Dynarrays: pointer equality ─────────────────────────────
+
+func session_dynarrays() {
+    section("4. Dynarray: pointer equality")
+
+    region {
+        var v = make([]int, 3)
+        v[0] = 10; v[1] = 20; v[2] = 30
+
+        var w = v                          // mismo buffer
+        var u = make([]int, 3)             // buffer distinto
+        u[0] = 10; u[1] = 20; u[2] = 30
+
+        check_bool(is_same(v, w), true,  "is_same(v, w) (mismo buffer)")
+        check_bool(is_same(v, u), false, "!is_same(v, u) (buffers distintos)")
+
+        // Mutación en v afecta a w (alias).
+        v[0] = 99
+        check(w[0], 99, "w[0] = 99 (alias de v)")
+
+        // Pero u no cambia.
+        check(u[0], 10, "u[0] sigue siendo 10")
+    }
+}
+
+// ─── 5. Funciones: pointer equality ─────────────────────────────
+
+func add(a int, b int) int { return a + b }
+func sub(a int, b int) int { return a - b }
+
+func session_functions() {
+    section("5. Función: pointer equality")
+
+    var f = add
+    var g = add
+    var h = sub
+
+    // Nota: el env de `add` está cacheado en un global, así que dos
+    // asignaciones de `add` comparten el mismo pointer.
+    check_bool(is_same(f, g), true,  "is_same(f, g) (misma fn add)")
+    check_bool(is_same(f, h), false, "!is_same(f, h) (add vs sub)")
+
+    // Comportamiento consistente con ==.
+    check(f(2, 3), 5, "f(2,3)")
+    check(h(10, 4), 6, "h(10,4)")
+}
+
+// ─── MAIN ───────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — POINTER IDENTITY (is_same)")
+    println("══════════════════════════════════════════════")
+
+    session_structs()
+    session_null()
+    session_strings()
+    session_dynarrays()
+    session_functions()
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

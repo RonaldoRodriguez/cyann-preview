@@ -1,0 +1,665 @@
+// todo_demo.cyn — Demo integrador de cyann: TODO CRUD + cobertura
+// exhaustiva de features.
+//
+//   bun run.ts examples/todo_demo.cyn demos/todo_demo.wasm
+//   wasmtime demos/todo_demo.wasm
+
+@include("lib/std.cyn")
+@include("lib/std_v2.cyn")
+
+// ═════════════════════════════════════════════════════════
+// CONSTANTES
+// ═════════════════════════════════════════════════════════
+
+const VERSION   string = "todo-v1.0"
+const MAX_TITLE int    = 64
+const MAGIC     uint   = 0xDEADBEEFu
+
+// ═════════════════════════════════════════════════════════
+// TIPOS
+// ═════════════════════════════════════════════════════════
+
+type Item struct {
+    id    int
+    title string
+    done  bool
+}
+
+type Stats struct {
+    total     int
+    completed int
+    pending   int
+}
+
+// ═════════════════════════════════════════════════════════
+// ESTADO GLOBAL
+// ═════════════════════════════════════════════════════════
+
+var g_items   []Item = []
+var g_next_id int    = 1
+var g_ops     int    = 0
+var g_pass    int    = 0
+var g_fail    int    = 0
+
+// ═════════════════════════════════════════════════════════
+// TEST INFRA
+// ═════════════════════════════════════════════════════════
+
+func section(t string) {
+    println("")
+    print("═══ ")
+    println(t)
+}
+
+func check(got int, want int, l string) {
+    if got == want {
+        g_pass = g_pass + 1
+        print("  ok   "); println(l)
+    } else {
+        g_fail = g_fail + 1
+        print("  FAIL "); print(l)
+        print(": got="); print_int(got)
+        print(" want="); println_int(want)
+    }
+}
+
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+
+func check_str(got string, want string, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else {
+        g_fail = g_fail + 1
+        print("  FAIL "); println(l)
+        print("    got='"); print(got)
+        print("' want='"); print(want); println("'")
+    }
+}
+
+// ═════════════════════════════════════════════════════════
+// CRUD
+// ═════════════════════════════════════════════════════════
+
+func todo_clear() {
+    g_items = []
+    g_next_id = 1
+    g_ops = 0
+}
+
+func todo_add(title string) int {
+    g_ops = g_ops + 1
+    var id int = g_next_id
+    g_next_id = g_next_id + 1
+
+    var n int = len(g_items)
+    var new_items []Item = make([]Item, n + 1)
+    var i int = 0
+    for i < n {
+        new_items[i] = g_items[i]
+        i = i + 1
+    }
+    new_items[n] = Item{id: id, title: title, done: false}
+    g_items = new_items
+    return id
+}
+
+func todo_count() int {
+    return len(g_items)
+}
+
+func todo_index_of(id int) int {
+    var n int = len(g_items)
+    var i int = 0
+    for i < n {
+        if g_items[i].id == id { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+func todo_find(id int) Item {
+    var i int = todo_index_of(id)
+    if i < 0 { return null }
+    return g_items[i]
+}
+
+func todo_title(id int) string {
+    var it Item = todo_find(id)
+    if it == null { return "<missing>" }
+    return it.title
+}
+
+func todo_is_done(id int) bool {
+    var it Item = todo_find(id)
+    if it == null { return false }
+    return it.done
+}
+
+func todo_rename(id int, new_title string) bool {
+    g_ops = g_ops + 1
+    var i int = todo_index_of(id)
+    if i < 0 { return false }
+    g_items[i].title = new_title
+    return true
+}
+
+func todo_toggle(id int) bool {
+    g_ops = g_ops + 1
+    var i int = todo_index_of(id)
+    if i < 0 { return false }
+    g_items[i].done = !g_items[i].done
+    return true
+}
+
+func todo_remove(id int) bool {
+    g_ops = g_ops + 1
+    var i int = todo_index_of(id)
+    if i < 0 { return false }
+
+    var n int = len(g_items)
+    var new_items []Item = make([]Item, n - 1)
+    var w int = 0
+    var r int = 0
+    for r < n {
+        if r == i { r = r + 1; continue }
+        new_items[w] = g_items[r]
+        w = w + 1
+        r = r + 1
+    }
+    g_items = new_items
+    return true
+}
+
+// ═════════════════════════════════════════════════════════
+// QUERIES CON CALLBACKS
+// ═════════════════════════════════════════════════════════
+
+func todo_count_if(pred fn(Item) bool) int {
+    var c int = 0
+    var n int = len(g_items)
+    var i int = 0
+    for i < n {
+        if pred(g_items[i]) { c = c + 1 }
+        i = i + 1
+    }
+    return c
+}
+
+func todo_filter(pred fn(Item) bool) []Item {
+    var result []Item = []
+    var n int = len(g_items)
+    var i int = 0
+    for i < n {
+        if pred(g_items[i]) {
+            var m int = len(result)
+            var new_result []Item = make([]Item, m + 1)
+            var j int = 0
+            for j < m {
+                new_result[j] = result[j]
+                j = j + 1
+            }
+            new_result[m] = g_items[i]
+            result = new_result
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// ═════════════════════════════════════════════════════════
+// STATS
+// ═════════════════════════════════════════════════════════
+
+func todo_stats() Stats {
+    var n int = len(g_items)
+    var done int = 0
+    var i int = 0
+    for i < n {
+        if g_items[i].done { done = done + 1 }
+        i = i + 1
+    }
+    return Stats{total: n, completed: done, pending: n - done}
+}
+
+func todo_stats_anon() struct { total: int; done: int; todo: int } {
+    var s Stats = todo_stats()
+    return struct { total: s.total, done: s.completed, todo: s.pending }
+}
+
+// ═════════════════════════════════════════════════════════
+// DISPLAY
+// ═════════════════════════════════════════════════════════
+
+func print_item(it Item) {
+    print("  [")
+    print_int(it.id)
+    print("] ")
+    if it.done { print("[x] ") } else { print("[ ] ") }
+    println(it.title)
+}
+
+func todo_print() {
+    var n int = len(g_items)
+    if n == 0 { println("  (vacía)") }
+    else {
+        var i int = 0
+        for i < n {
+            print_item(g_items[i])
+            i = i + 1
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 1: CRUD básico
+// ═════════════════════════════════════════════════════════
+
+func session_crud() {
+    section("1. CRUD básico")
+    todo_clear()
+
+    var id1 int = todo_add("Buy milk")
+    var id2 int = todo_add("Walk dog")
+    var id3 int = todo_add("Read book")
+
+    check(todo_count(), 3, "3 items agregados")
+    check(id1, 1, "id1 = 1")
+    check(id2, 2, "id2 = 2")
+    check(id3, 3, "id3 = 3")
+
+    check_str(todo_title(id1), "Buy milk", "titulo(id1)")
+    check_str(todo_title(id2), "Walk dog", "titulo(id2)")
+
+    check_bool(todo_is_done(id1), false, "id1 no done")
+    check_bool(todo_toggle(id2), true, "toggle(id2) OK")
+    check_bool(todo_is_done(id2), true, "id2 done")
+    check_bool(todo_is_done(id1), false, "id1 sigue no done")
+
+    todo_rename(id1, "Buy bread")
+    check_str(todo_title(id1), "Buy bread", "renombrado id1")
+
+    check_bool(todo_remove(id2), true, "remove(id2) OK")
+    check(todo_count(), 2, "quedan 2 items")
+    check_bool(todo_remove(999), false, "remove(999) falla")
+
+    todo_print()
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 2: Lista vacía
+// ═════════════════════════════════════════════════════════
+
+func session_empty() {
+    section("2. Lista vacía")
+    todo_clear()
+
+    check(todo_count(), 0, "count vacío")
+    check_bool(todo_remove(1), false, "remove sobre vacío")
+
+    var it Item = todo_find(1)
+    check_bool(it == null, true, "find sobre vacío = null")
+    check_str(todo_title(1), "<missing>", "title sobre vacío")
+
+    todo_print()
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 3: Stats + anon struct
+// ═════════════════════════════════════════════════════════
+
+func session_stats() {
+    section("3. Stats")
+    todo_clear()
+
+    todo_add("A"); todo_add("B"); todo_add("C"); todo_add("D")
+    todo_toggle(1); todo_toggle(3)
+
+    var s Stats = todo_stats()
+    check(s.total, 4, "total = 4")
+    check(s.completed, 2, "completed = 2")
+    check(s.pending, 2, "pending = 2")
+
+    var a struct { total: int; done: int; todo: int } = todo_stats_anon()
+    check(a.total, 4, "anon.total = 4")
+    check(a.done, 2, "anon.done = 2")
+    check(a.todo, 2, "anon.todo = 2")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 4: Callbacks
+// ═════════════════════════════════════════════════════════
+
+func is_done(it Item) bool { return it.done }
+func is_pending(it Item) bool { return !it.done }
+
+func session_callbacks() {
+    section("4. Callbacks")
+    todo_clear()
+
+    todo_add("A"); todo_add("B"); todo_add("C"); todo_add("D")
+    todo_toggle(1); todo_toggle(3)
+
+    check(todo_count_if(is_done), 2, "count done = 2")
+    check(todo_count_if(is_pending), 2, "count pending = 2")
+
+    var done_items []Item = todo_filter(is_done)
+    check(len(done_items), 2, "filter done = 2")
+
+    var ab []Item = todo_filter(func(it Item) bool {
+        return it.title == "A" || it.title == "B"
+    })
+    check(len(ab), 2, "filter A|B = 2")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 5: Closures mutables
+// ═════════════════════════════════════════════════════════
+
+func make_counter() fn() int {
+    var count int = 0
+    return func() int {
+        count = count + 1
+        return count
+    }
+}
+
+func session_closures() {
+    section("5. Closures mutables")
+
+    var c1 = make_counter()
+    var c2 = make_counter()
+
+    check(c1(), 1, "c1() = 1")
+    check(c1(), 2, "c1() = 2")
+    check(c2(), 1, "c2() = 1 (independiente)")
+    check(c1(), 3, "c1() = 3 (c2 no lo afectó)")
+
+    var total int = 0
+    var add_to_total = func(x int) {
+        total = total + x
+    }
+    add_to_total(10); add_to_total(20); add_to_total(30)
+    check(total, 60, "accumulator: 10+20+30 = 60")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 6: Closures anidados
+// ═════════════════════════════════════════════════════════
+
+func make_adder_factory() fn(int) fn(int) int {
+    return func(n int) fn(int) int {
+        return func(x int) int { return x + n }
+    }
+}
+
+func session_nested_closures() {
+    section("6. Closures anidados")
+
+    var plus10  = make_adder_factory()(10)
+    var plus100 = make_adder_factory()(100)
+
+    check(plus10(5), 15, "plus10(5) = 15")
+    check(plus100(5), 105, "plus100(5) = 105")
+    check(plus10(0), 10, "plus10(0) = 10")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 7: Regiones
+// ═════════════════════════════════════════════════════════
+
+func sum_with_region() int {
+    var total int = 0
+    region {
+        var i int = 0
+        for i < 10 {
+            var p int = arena_alloc(16)
+            mem_write32(p, i)
+            total = total + mem_read32(p)
+            i = i + 1
+        }
+    }
+    return total
+}
+
+func session_regions() {
+    section("7. Regiones")
+
+    check(sum_with_region(), 45, "suma 0..9 = 45")
+
+    var t int = 0
+    region { region { region { t = 42 } } }
+    check(t, 42, "regiones anidadas")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 8: Switch dispatch
+// ═════════════════════════════════════════════════════════
+
+func dispatch(cmd int, arg int) int {
+    switch cmd {
+    case 0:      return arg + 1
+    case 1:      return arg * 2
+    case 2, 3:   return arg * 100
+    case 0x10:   return -arg
+    default:     return 0
+    }
+}
+
+func session_switch() {
+    section("8. Switch dispatch")
+
+    check(dispatch(0, 5), 6, "cmd 0 → 6")
+    check(dispatch(1, 5), 10, "cmd 1 → 10")
+    check(dispatch(2, 5), 500, "cmd 2 → 500")
+    check(dispatch(3, 5), 500, "cmd 3 → 500")
+    check(dispatch(0x10, 5), -5, "cmd 0x10 → -5")
+    check(dispatch(99, 5), 0, "cmd 99 → default")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 9: Hex y raw memory
+// ═════════════════════════════════════════════════════════
+
+func classify_magic(x int) int {
+    switch x {
+    case 0xCAFEBABE: return 1
+    case 0xDEADBEEF: return 2
+    default:         return 0
+    }
+}
+
+// Serializa un Item: [id: i32, title_ptr: i32, done: i32].
+func serialize_item(it Item) int {
+    var buf int = arena_alloc(12)
+    mem_write32(buf,     it.id)
+    mem_write32(buf + 4, it.title as int)
+    var done int = 0
+    if it.done { done = 1 }
+    mem_write32(buf + 8, done)
+    return buf
+}
+
+func session_hex_mem() {
+    section("9. Hex y raw memory")
+
+    check(classify_magic(0xCAFEBABE), 1, "CAFEBABE → 1")
+    check(classify_magic(0xDEADBEEF), 2, "DEADBEEF → 2")
+    check(classify_magic(0), 0, "default")
+
+    var it Item = Item{id: 42, title: "hello", done: true}
+    var buf int = serialize_item(it)
+    check(mem_read32(buf), 42, "id serializado")
+    check(mem_read32(buf + 8), 1, "done serializado")
+
+    var x int = 0b10101010
+    check(x & 0x0F, 0x0A, "x & 0x0F = 0x0A")
+    check(x | 0x0F, 0xAF, "x | 0x0F = 0xAF")
+    check(1 << 8, 256, "1 << 8 = 256")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 10: Overloads
+// ═════════════════════════════════════════════════════════
+
+func describe(x int) string    { return "int" }
+func describe(x string) string { return "string" }
+func describe(x bool) string   { return "bool" }
+
+func session_overloads() {
+    section("10. Overloads")
+
+    check_str(describe(42), "int", "describe(42)")
+    check_str(describe("x"), "string", "describe(string)")
+    check_str(describe(true), "bool", "describe(bool)")
+
+    check(min(3, 7), 3, "min(int,int)")
+    check(max(3, 7), 7, "max(int,int)")
+    check(abs(-15), 15, "abs(-15)")
+    check(clamp(100, 0, 50), 50, "clamp(100, 0, 50)")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 11: Anonymous structs
+// ═════════════════════════════════════════════════════════
+
+func make_point(x int, y int) struct { x: int; y: int } {
+    return struct { x: x, y: y }
+}
+
+func point_sum(p struct { x: int; y: int }) int {
+    return p.x + p.y
+}
+
+func session_anon_structs() {
+    section("11. Anonymous structs")
+
+    var p = struct { x: 3, y: 4 }
+    check(p.x, 3, "p.x")
+    check(p.y, 4, "p.y")
+
+    var q struct { x: int; y: int } = struct { x: 10, y: 20 }
+    check(point_sum(q), 30, "point_sum(q)")
+
+    var r struct { x: int; y: int } = make_point(1, 2)
+    check(r.x, 1, "make_point(1,2).x")
+    check(r.y, 2, "make_point(1,2).y")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 12: Loops
+// ═════════════════════════════════════════════════════════
+
+func session_loops() {
+    section("12. Loops")
+    todo_clear()
+
+    todo_add("A"); todo_add("B"); todo_add("C"); todo_add("D"); todo_add("E")
+    todo_toggle(2); todo_toggle(4)
+
+    var done_count int = 0
+    for it in g_items {
+        if it.done { done_count = done_count + 1 }
+    }
+    check(done_count, 2, "for-in done count = 2")
+
+    var first_pending_id int = -1
+    for it in g_items {
+        if it.done { continue }
+        first_pending_id = it.id
+        break
+    }
+    check(first_pending_id, 1, "primer pending = 1")
+
+    var fixed [5]int = [10, 20, 30, 40, 50]
+    var sum int = 0
+    for x in fixed { sum = sum + x }
+    check(sum, 150, "array fijo suma = 150")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 13: Strings
+// ═════════════════════════════════════════════════════════
+
+func session_strings() {
+    section("13. Strings")
+
+    check_str(str_from_int(0), "0", "str_from_int(0)")
+    check_str(str_from_int(42), "42", "str_from_int(42)")
+    check_str(str_from_int(-7), "-7", "str_from_int(-7)")
+    check_str(str_from_int(12345), "12345", "str_from_int(12345)")
+
+    var a string = "foo"
+    var b string = "bar"
+    var c string = a + b
+    check_str(c, "foobar", "concat")
+    check(str_len(c), 6, "len('foobar') = 6")
+
+    check_bool("a" < "b", true, "a < b")
+    check_bool("abc" == "abc", true, "abc == abc")
+    check_bool("" < "a", true, "'' < 'a'")
+    check(str_len("ñ"), 2, "len('ñ') = 2 bytes")
+}
+
+// ═════════════════════════════════════════════════════════
+// SESSION 14: Casts
+// ═════════════════════════════════════════════════════════
+
+func session_casts() {
+    section("14. Casts")
+
+    var i int = 42
+    var f f64 = i as f64
+    check(f as int, 42, "int → f64 → int")
+
+    var big int = 1000
+    var wide int64 = big as int64
+    check(wide as int, 1000, "int → int64 → int")
+
+    // -1 como i32 tiene el bit-pattern 0xFFFFFFFF. Al hacer `as uint`,
+    // obtenemos 4294967295 (u32). Volver a `as int` lo lleva a -1.
+    var neg int = -1
+    var u uint = neg as uint
+    check(u as int, -1, "-1 as uint → as int = -1")
+
+    // Comprobación del valor u32 exacto usando un literal con sufijo.
+    check_bool(u == 4294967295u, true, "-1 as uint == 4294967295u")
+}
+
+// ═════════════════════════════════════════════════════════
+// MAIN
+// ═════════════════════════════════════════════════════════
+
+func main() {
+    println("cyann — TODO CRUD DEMO")
+    print("versión: ")
+    println(VERSION)
+    println("══════════════════════════════════════════════")
+
+    session_crud()
+    session_empty()
+    session_stats()
+    session_callbacks()
+    session_closures()
+    session_nested_closures()
+    session_regions()
+    session_switch()
+    session_hex_mem()
+    session_overloads()
+    session_anon_structs()
+    session_loops()
+    session_strings()
+    session_casts()
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

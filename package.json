@@ -1,0 +1,17 @@
+{
+  "name": "cyann-preview",
+  "version": "0.1.0",
+  "description": "Lenguaje de programación experimental compilado a WebAssembly sin GC",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "bash run-all.sh",
+    "test:ps": "powershell -File run-all.ps1",
+    "run": "bun src/run.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

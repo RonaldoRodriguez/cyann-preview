@@ -1,0 +1,161 @@
+// type_alias.cyn — Alias de tipos (type Name T).
+
+@include("lib/std.cyn")
+@include("lib/std_v2.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); print(l); print(": got="); print_int(got); print(" want="); println_int(want) }
+}
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+
+// ─── Aliases de primitivos ──────────────────────────────────────
+
+type Int int32
+type Small int
+type Big int64
+type Positive uint32
+type Real float64
+type Label string
+type Flag bool
+
+// ─── Alias de tipos compuestos ──────────────────────────────────
+
+type IntList []int
+type Vec3 [3]int
+type Predicate func(int) bool
+
+// ─── Struct que usa aliases ─────────────────────────────────────
+
+type Point struct {
+    x Int
+    y Int
+    tag Label
+}
+
+// ─── Alias de struct ────────────────────────────────────────────
+
+type P Point
+
+// ─── 1. Aliases de primitivos ───────────────────────────────────
+
+func session_primitives() {
+    section("1. Aliases de primitivos")
+
+    var a Int = 42
+    check(a, 42, "Int = int32")
+
+    var b Small = -7
+    check(b, -7, "Small = int")
+
+    var c Label = "hola"
+    check_bool(c == "hola", true, "Label = string")
+
+    var d Flag = true
+    check_bool(d, true, "Flag = bool")
+
+    // Mezcla: alias y primitivo son el mismo tipo.
+    var e int = a
+    check(e, 42, "asignar Int a int (mismo tipo)")
+
+    var f Int = e
+    check(f, 42, "asignar int a Int (mismo tipo)")
+}
+
+// ─── 2. Alias de compuestos ─────────────────────────────────────
+
+func session_compounds() {
+    section("2. Aliases de compuestos")
+
+    region {
+        var xs IntList = make(IntList, 3)
+        xs[0] = 10; xs[1] = 20; xs[2] = 30
+        check(len(xs), 3, "len(IntList) = 3")
+        var total int = 0
+        for x in xs { total = total + x }
+        check(total, 60, "suma IntList")
+    }
+
+    var v Vec3 = [1, 2, 3]
+    check(v[0], 1, "Vec3[0]")
+    check(v[2], 3, "Vec3[2]")
+}
+
+// ─── 3. Struct con aliases ──────────────────────────────────────
+
+func session_structs() {
+    section("3. Struct con aliases")
+
+    var p = Point{x: 3, y: 4, tag: "origin"}
+    check(p.x, 3, "p.x")
+    check(p.y, 4, "p.y")
+    check_bool(p.tag == "origin", true, "p.tag")
+
+    // Alias de struct: P y Point son intercambiables.
+    var q P = Point{x: 3, y: 4, tag: "origin"}
+    check_bool(p == q, true, "P == Point (mismo tipo)")
+
+    var r P = p
+    check(r.x, 3, "asignar Point a P")
+}
+
+// ─── 4. Alias en firmas ─────────────────────────────────────────
+
+func double(n Int) Int { return n * 2 }
+
+func is_even(n Int) bool { return n % 2 == 0 }
+
+func session_signatures() {
+    section("4. Alias en firmas")
+
+    check(double(21), 42, "double(21)")
+    check_bool(is_even(10), true, "is_even(10)")
+    check_bool(is_even(7), false, "is_even(7)")
+
+    // Callback con alias.
+    var pred Predicate = func(x int) bool { return x > 5 }
+    check_bool(pred(10), true, "pred(10)")
+    check_bool(pred(3), false, "pred(3)")
+}
+
+// ─── 5. Alias de alias ──────────────────────────────────────────
+
+type VeryBig Big       // alias de alias
+
+func session_alias_of_alias() {
+    section("5. Alias de alias")
+
+    var x VeryBig = 12345
+    check(x as int, 12345, "VeryBig a int")
+}
+
+// ─── MAIN ───────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — TYPE ALIASES")
+    println("══════════════════════════════════════════════")
+
+    session_primitives()
+    session_compounds()
+    session_structs()
+    session_signatures()
+    session_alias_of_alias()
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

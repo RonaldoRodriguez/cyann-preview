@@ -1,0 +1,63 @@
+// lib/std_v2.cyn — Utilidades extra sobre std.cyn.
+
+@include("std.cyn")
+
+// ─── Números ────────────────────────────────────────────
+
+func min(a int, b int) int { if a < b { return a } return b }
+func max(a int, b int) int { if a > b { return a } return b }
+func abs(x int) int { if x < 0 { return -x } return x }
+
+func clamp(x int, lo int, hi int) int {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+// Overloads flotantes.
+func min(a f64, b f64) f64 { if a < b { return a } return b }
+func max(a f64, b f64) f64 { if a > b { return a } return b }
+
+// ─── Print extra ────────────────────────────────────────
+
+func print_bool(b bool) {
+    if b { print("true") } else { print("false") }
+}
+
+func println_bool(b bool) {
+    print_bool(b)
+    println("")
+}
+
+// ─── Int → string ───────────────────────────────────────
+
+func digit_to_str(d int) string {
+    switch d {
+    case 0: return "0"
+    case 1: return "1"
+    case 2: return "2"
+    case 3: return "3"
+    case 4: return "4"
+    case 5: return "5"
+    case 6: return "6"
+    case 7: return "7"
+    case 8: return "8"
+    case 9: return "9"
+    }
+    return "?"
+}
+
+func str_from_int(n int) string {
+    if n == 0 { return "0" }
+    var negative bool = n < 0
+    var x int = n
+    if negative { x = -x }
+    var buf string = ""
+    for x > 0 {
+        var digit int = x % 10
+        buf = digit_to_str(digit) + buf
+        x = x / 10
+    }
+    if negative { buf = "-" + buf }
+    return buf
+}

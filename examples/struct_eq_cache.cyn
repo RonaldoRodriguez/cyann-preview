@@ -1,0 +1,158 @@
+// struct_eq_cache.cyn — Env cache de closures + equality estructural.
+
+@include("lib/std.cyn")
+@include("lib/std_v2.cyn")
+
+type Int int
+
+type Point struct {
+    x int
+    y int
+}
+
+type Named struct {
+    id   int
+    name string
+}
+
+var g_pass Int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); print(l); print(": got="); print_int(got); print(" want="); println_int(want) }
+}
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+
+// ─── 1. Env cache ────────────────────────────────────────────
+
+func apply(f fn(int) int, x int) int { return f(x) }
+
+func session_env_cache() {
+    section("1. Env cache de closures sin captures")
+
+    var f = func(x int) int { return x * 2 }
+
+    var total int = 0
+    var i int = 0
+    for i < 100 {
+        total = total + f(i)
+        i = i + 1
+    }
+    // sum(2*i for i in 0..99) = 2 * 99*100/2 = 9900
+    check(total, 9900, "100 invocaciones de f(i)")
+
+    var i2 int = 0
+    for i2 < 100 {
+        total = total + apply(f, i2)
+        i2 = i2 + 1
+    }
+    check(total, 19800, "100 invocaciones vía apply")
+
+    var g = func(x int) int { return x + 1 }
+    check(f(5), 10, "f(5) = 10")
+    check(g(5), 6,  "g(5) = 6 (env distinto)")
+}
+
+// ─── 2. Struct equality ──────────────────────────────────────
+
+func session_struct_eq() {
+    section("2. Struct equality")
+
+    var p = struct { x: 1, y: 2 }
+    var q = struct { x: 1, y: 2 }
+    var r = struct { x: 1, y: 3 }
+
+    check_bool(p == q, true,  "anon p == q (mismo contenido)")
+    check_bool(p == r, false, "anon p == r (distinto)")
+    check_bool(p != r, true,  "anon p != r")
+    check_bool(p != q, false, "anon p != q")
+
+    var a Point = Point{x: 10, y: 20}
+    var b Point = Point{x: 10, y: 20}
+    var c Point = Point{x: 10, y: 21}
+    check_bool(a == b, true,  "Point a == b (mismo contenido, distinto ptr)")
+    check_bool(a == c, false, "Point a != c")
+    check_bool(a != c, true,  "Point a != c")
+
+    var n1 Named = Named{id: 1, name: "alice"}
+    var n2 Named = Named{id: 1, name: "alice"}
+    var n3 Named = Named{id: 1, name: "bob"}
+    check_bool(n1 == n2, true,  "Named n1 == n2")
+    check_bool(n1 == n3, false, "Named n1 != n3")
+
+    var nullPoint Point = null
+    check_bool(nullPoint == null, true,  "nullPoint == null")
+    check_bool(a == null, false,         "a != null")
+}
+
+// ─── 3. En uso real ──────────────────────────────────────────
+
+func append_point(arr []Point, p Point) []Point {
+    var n int = len(arr)
+    var new_arr []Point = make([]Point, n + 1)
+    var i int = 0
+    for i < n {
+        new_arr[i] = arr[i]
+        i = i + 1
+    }
+    new_arr[n] = p
+    return new_arr
+}
+
+func session_uses() {
+    section("3. Struct equality en uso real")
+
+    var p = Point{x: 1, y: 2}
+
+    if (p == Point{x: 1, y: 2}) {
+        check(1, 1, "if p == Point{1,2}")
+    } else {
+        check(0, 1, "if p == Point{1,2} (no debería fallar)")
+    }
+
+    if (p == Point{x: 0, y: 0}) {
+        check(0, 1, "if p == Point{0,0} (no debería pasar)")
+    } else {
+        check(1, 1, "else de Point{0,0}")
+    }
+
+    var arr []Point = []
+    arr = append_point(arr, Point{x: 1, y: 1})
+    arr = append_point(arr, Point{x: 2, y: 2})
+    arr = append_point(arr, Point{x: 1, y: 1})
+    arr = append_point(arr, Point{x: 3, y: 3})
+
+    var count int = 0
+    for pt in arr {
+        if (pt == Point{x: 1, y: 1}) { count = count + 1 }
+    }
+    check(count, 2, "2 Point{1,1} en el array")
+    
+}
+
+// ─── MAIN ────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — ENV CACHE + STRUCT EQUALITY")
+    println("══════════════════════════════════════════════")
+
+    session_env_cache()
+    session_struct_eq()
+    session_uses()
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

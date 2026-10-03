@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Hook local: corre typecheck y la suite antes de permitir un commit.
+# Instalar una vez con:  git config core.hooksPath .githooks
+set -e
+
+echo "▶ pre-commit: bunx tsc --noEmit"
+if ! bunx tsc --noEmit; then
+  echo ""
+  echo "❌ tsc reportó errores. Commit cancelado."
+  echo "   Arreglá los errores y volvé a intentar, o usá 'git commit --no-verify'"
+  echo "   si sabés lo que estás haciendo (no recomendado)."
+  exit 1
+fi
+
+echo ""
+echo "▶ pre-commit: run-all.sh"
+if ! bash run-all.sh; then
+  echo ""
+  echo "❌ La suite de tests falló. Commit cancelado."
+  exit 1
+fi
+
+echo ""
+echo "✅ pre-commit OK"

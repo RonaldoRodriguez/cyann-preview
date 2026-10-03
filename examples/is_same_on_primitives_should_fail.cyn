@@ -1,0 +1,15 @@
+// is_same_on_primitives_should_fail.cyn
+//
+// Debe FALLAR en compilación: is_same requiere un tipo referencia
+// (struct, pointer, dynarray, string, fn). Para primitivos, hay que
+// usar '==' directamente.
+//
+// Error esperado:
+//   is_same requiere un tipo referencia (struct, pointer, dynarray,
+//   string, fn); se obtuvo s32. Usa '==' para primitivos.
+
+func main() {
+    var a int = 5
+    var b int = 6
+    var c = is_same(a, b)
+}
