@@ -227,6 +227,215 @@ Llamar a un closure usa `call_indirect` con el tipo deducido de la firma. Los ar
 
 ---
 
+
+# Wildcards + README de multi-return
+
+## Parte 1 — Wildcards
+
+Son tres cambios puntuales. `_` ya se tokeniza como IDENTIFIER, así que el parser no necesita nada nuevo — sólo el semantic y el codegen tienen que reconocerlo.
+
+### Cambio 1 — `src/parser.ts`
+
+Buscá la interfaz `MultiDeclNode` y cambiá el tipo de `uniqueNames`:
+
+```ts
+export interface MultiDeclNode {
+  kind: 'multi_decl';
+  names: string[];
+  expr: MathNode;
+  uniqueNames?: (string | null)[];
+}
+```
+
+Antes era `uniqueNames?: string[]`. Ahora puede tener `null` en las posiciones que son wildcard.
+
+### Cambio 2 — `src/semantic.ts`
+
+**a)** En `findCapturedVars`, busca el case `'multi_decl':` y reemplazalo:
+
+```ts
+        case 'multi_decl':
+          visitExpr(stmt.expr);
+          for (const n of stmt.names) {
+            if (n !== '_') declare(n);
+          }
+          return;
+```
+
+**b)** En `analyzeStatement`, busca el case `'multi_decl':` y reemplazá el bloque de declaración:
+
+```ts
+        md.uniqueNames = [];
+        for (let i = 0; i < md.names.length; i++) {
+          if (md.names[i] === '_') {
+            md.uniqueNames.push(null);
+            continue;
+          }
+          const uniqueName = this.scopeControl.declare(
+            md.names[i], returnTypes[i], true, false, false
+          );
+          md.uniqueNames.push(uniqueName);
+          this.slotLevels.set(uniqueName, this.currentLevel);
+        }
+```
+
+El resto del case queda igual.
+
+### Cambio 3 — `src/codegen.ts`
+
+Reemplazá el case `'multi_decl':` completo por:
+
+```ts
+      case 'multi_decl': {
+        const md = stmt as MultiDeclNode;
+        const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
+        if (!returnTypes || !md.uniqueNames ||
+            md.uniqueNames.length !== returnTypes.length) {
+          throw new Error('multi_decl sin resolver (semantic no rellenó uniqueNames/returnTypes)');
+        }
+
+        // Reservar un local por cada nombre no-wildcard.
+        for (let i = 0; i < md.uniqueNames.length; i++) {
+          const un = md.uniqueNames[i];
+          if (un !== null) {
+            b.addLocal(un, semanticToWasmType(returnTypes[i]));
+          }
+        }
+
+        // Compilar el call. Deja N valores en la pila: [v0, v1, ..., vN-1]
+        // con v_{N-1} arriba.
+        ec.compile(md.expr);
+
+        // Pop en orden inverso: wildcards se descartan con drop.
+        for (let i = md.uniqueNames.length - 1; i >= 0; i--) {
+          const un = md.uniqueNames[i];
+          if (un === null) {
+            b.drop();
+          } else {
+            b.setLocal(un);
+          }
+        }
+        break;
+      }
+```
+
+### Verificación
+
+Agregá al final de `examples/multi_return.cyn`, dentro de `main()`, antes de la sección del resumen:
+
+```cynn
+    section("6. Wildcards")
+    var _, r_only = divmod(17, 5)
+    check(r_only, 2, "divmod(17, 5) → r = 2 (descartando q)")
+
+    var q_only, _ = divmod(17, 5)
+    check(q_only, 3, "divmod(17, 5) → q = 3 (descartando r)")
+
+    var _, _ = divmod(99, 9)
+    check(1, 1, "ambos wildcards compila (aunque no sirva de mucho)")
+```
+
+Después corré:
+
+```powershell
+bunx tsc --noEmit
+bun src/run.ts examples/multi_return.cyn
+.\run-all.ps1
+```
+
+Debería dar 21 checks verdes y 14/14 en la suite.
+
+---
+
+## Parte 2 — Sección del README
+
+Copiá esto al `README.md`, justo después de la sección de "Métodos" (o donde tengas agrupadas las features del lenguaje):
+
+---
+
+Multi-return
+------------
+
+Una función puede retornar más de un valor. La sintaxis toma la forma de Go: los tipos de retorno se agrupan entre paréntesis y las expresiones del `return` se separan por comas.
+
+```cynn
+    func divmod(a int, b int) (int, int) {
+        return a / b, a % b
+    }
+
+    func parse_int(s string) (int, bool) {
+        if s == "cuarenta" { return 40, true }
+        if s == "cincuenta" { return 50, true }
+        return 0, false
+    }
+```
+Los tipos de retorno pueden mezclar cualquier combinación: enteros, flotantes, strings, bools, structs, punteros, arrays, y funciones. No hay un límite sintáctico en la cantidad de valores.
+
+### Destructuring
+
+Del lado del llamador, los valores se capturan con una declaración múltiple. Dos formas son válidas, ambas equivalentes:
+
+```cynn
+    var q, r = divmod(17, 5)
+    a, b := divmod(100, 7)
+```
+El compilador verifica que la cantidad de nombres coincida con la cantidad de valores retornados por la función. Si no coinciden, error de compilación.
+
+### Wildcards
+
+Un guión bajo como nombre descarta el valor correspondiente. Útil cuando sólo te interesa una parte del retorno:
+
+```cynn
+    var _, r = divmod(17, 5)      // sólo el resto
+    var q, _ = divmod(17, 5)      // sólo el cociente
+    var _, _ = divmod(99, 9)      // descarta ambos (raro pero válido)
+```
+
+El `_` no crea un binding en el scope. No podés referenciarlo después.
+
+### En métodos
+
+Los métodos soportan multi-return sin cambios sintácticos:
+
+```cynn
+    type Point struct { x int; y int }
+
+    [Point]
+    func coords() (int, int) {
+        return self.x, self.y
+    }
+
+    [Point]
+    func sum_and_diff() (int, int) {
+        return self.x + self.y, self.x - self.y
+    }
+
+    var p = Point { x: 3, y: 4 }
+    var px, py = p.coords()
+    var sm, df = p.sum_and_diff()
+```
+
+### Representación en WebAssembly
+
+El módulo resultante usa la extensión **multi-value** de WebAssembly: la firma de la función se emite como `(func (param ...) (result t1 t2 ...))` y el `return` deja los N valores en la pila. El `CALL` no necesita ninguna instrucción especial. Todos los engines modernos (wasmtime, Bun, Node, navegadores) soportan multi-value desde hace años.
+
+La extensión se usa **sólo** para retornos. Los parámetros de función siguen siendo uno por uno. Si en algún momento querés que una función tome N valores como argumento (por ejemplo `foo(divmod(a, b))`), esa es otra feature — pasa por tuplas como valor de primera clase y no está soportada.
+
+### Lo que no está soportado
+
+- **Multi-return como argumento de función.** `foo(divmod(a, b))` no compila. Primero capturá en variables y pasá las variables.
+- **Multi-return en `if` y `for`.** El patrón Go `if _, err = f(); err != nil { ... }` no existe todavía. Por ahora declarás con `var` o `:=` fuera del `if`.
+- **Reasignación múltiple.** `q, r = divmod(a, b)` sobre variables ya existentes no está soportado. La declaración múltiple sí.
+- **Multi-return desde lambdas.** Las funciones literales (`func(...) { ... }` inline) no soportan múltiples tipos de retorno todavía. Los métodos y las funciones nominales sí.
+
+### Ejemplo completo
+
+`examples/multi_return.cyn` cubre los seis escenarios: divmod básico, tipos mixtos, early returns, métodos con multi-return, composición de llamadas, y wildcards. Corré:
+
+```bash
+    bun src/run.ts examples/multi_return.cyn
+```
+
 ## Pattern matching
 
 Los `switch` de cyann soportan pattern matching estructural:

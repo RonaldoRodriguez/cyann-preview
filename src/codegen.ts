@@ -982,7 +982,7 @@ export class ExpressionCompiler {
       this.b.setLocal(address);
       return address;
     }
-
+// case 'multi_decl': {
     if (target.kind === 'struct_access') {
       const baseValueType = target.base.type as MathType;
       const baseType = target.resolvedBaseType ?? getStructType(baseValueType);
@@ -1588,18 +1588,26 @@ export class CodeGenerator {
           throw new Error('multi_decl sin resolver (semantic no rellenó uniqueNames/returnTypes)');
         }
 
-        // Reservar un local por cada nombre, con su tipo WASM.
+        // Reservar un local por cada nombre no-wildcard.
         for (let i = 0; i < md.uniqueNames.length; i++) {
-          b.addLocal(md.uniqueNames[i], semanticToWasmType(returnTypes[i]));
+          const un = md.uniqueNames[i];
+          if (un !== null) {
+            b.addLocal(un, semanticToWasmType(returnTypes[i]));
+          }
         }
 
         // Compilar el call. Deja N valores en la pila: [v0, v1, ..., vN-1]
         // con v_{N-1} arriba.
         ec.compile(md.expr);
 
-        // Pop en orden inverso: el último local recibe el top-of-stack.
+        // Pop en orden inverso: wildcards se descartan con drop.
         for (let i = md.uniqueNames.length - 1; i >= 0; i--) {
-          b.setLocal(md.uniqueNames[i]);
+          const un = md.uniqueNames[i];
+          if (un === null) {
+            b.drop();
+          } else {
+            b.setLocal(un);
+          }
         }
         break;
       }

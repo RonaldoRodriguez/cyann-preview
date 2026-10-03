@@ -296,7 +296,9 @@ export class SemanticAnalyzer {
           return;
         case 'multi_decl':
           visitExpr(stmt.expr);
-          for (const n of stmt.names) declare(n);
+          for (const n of stmt.names) {
+            if (n !== '_') declare(n);
+          }
           return;
         case 'assign':
           visitExpr(stmt.target);
@@ -554,6 +556,10 @@ export class SemanticAnalyzer {
 
         md.uniqueNames = [];
         for (let i = 0; i < md.names.length; i++) {
+          if (md.names[i] === '_') {
+            md.uniqueNames.push(null);
+            continue;
+          }
           const uniqueName = this.scopeControl.declare(
             md.names[i], returnTypes[i], true, false, false
           );
@@ -1837,4 +1843,4 @@ export class SemanticAnalyzer {
     }
     return false;
   }
-}
+} // case 'multi_decl':

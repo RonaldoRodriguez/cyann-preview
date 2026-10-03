@@ -67,6 +67,7 @@ func main() {
     println("cyann — MULTI-RETURN")
     println("══════════════════════════════════════════════")
 
+
     section("1. divmod básico")
     var q, r = divmod(17, 5)
     check(q, 3, "divmod(17, 5) → q = 3")
@@ -108,6 +109,16 @@ func main() {
     var qq, rr = divmod(consume_two(2, 3), 8)
     check(qq, 25, "divmod(203, 8) → q = 25")
     check(rr, 3, "divmod(203, 8) → r = 3")
+
+        section("6. Wildcards")
+    var _, r_only = divmod(17, 5)
+    check(r_only, 2, "divmod(17, 5) → r = 2 (descartando q)")
+
+    var q_only, _ = divmod(17, 5)
+    check(q_only, 3, "divmod(17, 5) → q = 3 (descartando r)")
+
+    var _, _ = divmod(99, 9)
+    check(1, 1, "ambos wildcards compila (aunque no sirva de mucho)")
 
     println("")
     println("══════════════════════════════════════════════")

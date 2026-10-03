@@ -6,7 +6,7 @@ import {
 } from './types';
 
 // ─── Nodos ────────────────────────────────────────────────────────────────
-
+// export interface MultiDeclNode {
 export interface VarConstNode {
   kind: 'var_decl' | 'const_decl';
   name: string;
@@ -26,7 +26,7 @@ export interface MultiDeclNode {
   kind: 'multi_decl';
   names: string[];
   expr: MathNode;
-  uniqueNames?: string[];
+  uniqueNames?: (string | null)[];
 }
 
 export interface AssignNode { kind: 'assign'; target: MathNode; expr: MathNode; }
