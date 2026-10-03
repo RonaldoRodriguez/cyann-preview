@@ -82,6 +82,16 @@ export interface SwitchNode {
   exprType?: MathType;
 }
 
+export interface FunctionDefNode {
+  kind: 'function_def';
+  name: string;
+  params: { name: string; type: MathType; uniqueName?: string }[];
+  returnType: MathType | null;
+  body: StatementNode[];
+  mangledName?: string;
+  receiver?: MathType;              // ← nuevo
+}
+
 export interface RegionNode { kind: 'region'; body: StatementNode[]; }
 export interface BreakNode    { kind: 'break'; }
 export interface ContinueNode { kind: 'continue'; }
@@ -166,10 +176,19 @@ export class Parser {
   }
 
   public parseStatement(): StatementNode {
+        // ── Atributos: [host(...)] o [Tipo] (receiver de método)
     if (this.currentToken.value === '[') {
       this.advance();
       if (this.matchToken('KEYWORD', 'host')) return this.parseImportDecl();
-      this.error("Solo se admite [host(...)] como atributo");
+
+      // Receiver de método: [Person] func saludo()
+      if (this.currentToken.type === 'IDENTIFIER') {
+        const receiver = this.parseGoTypeName();
+        this.expectToken('SYMBOL', ']');
+        return this.parseMethodDef(receiver);
+      }
+
+      this.error("Solo se admite [host(...)] o [Tipo] como atributo");
     }
 
     if (this.currentToken.value === 'var')    return this.parseVarDecl();
@@ -305,6 +324,31 @@ export class Parser {
     }
     const body = this.parseBlock();
     return { kind: 'function_def', name, params, returnType, body };
+  }
+
+    private parseMethodDef(receiver: MathType): FunctionDefNode {
+    this.expectToken('KEYWORD', 'func');
+    const name = this.expectToken('IDENTIFIER');
+
+    this.expectToken('SYMBOL', '(');
+    const params: { name: string; type: MathType }[] = [];
+    if (this.currentToken.value !== ')') {
+      for (;;) {
+        const paramName = this.expectToken('IDENTIFIER');
+        const paramType = this.parseGoTypeName();
+        params.push({ name: paramName, type: paramType });
+        if (!this.matchToken('SYMBOL', ',')) break;
+      }
+    }
+    const closeParenLine = this.currentToken.line;
+    this.expectToken('SYMBOL', ')');
+
+    let returnType: MathType | null = null;
+    if (this.currentToken.line === closeParenLine && this.isTypeStart()) {
+      returnType = this.parseGoTypeName();
+    }
+    const body = this.parseBlock();
+    return { kind: 'function_def', name, params, returnType, body, receiver };
   }
 
   private parseTypeOrStructDef(): StructDefNode | TypeAliasNode {

@@ -1,0 +1,120 @@
+// methods.cyn — Métodos con self.
+
+@include("lib/std.cyn")
+@include("lib/std_v2.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l); print(" got="); print_int(got); print(" want="); println_int(want) }
+}
+func check_bool(got bool, want bool, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l) }
+}
+
+// ─── Structs con métodos ─────────────────────────────────────────
+
+type Person struct {
+    name string
+    age  int
+}
+
+[Person]
+func greet() {
+    print("hola, soy ")
+    print(self.name)
+    print(" y tengo ")
+    print_int(self.age)
+    println(" años")
+}
+
+[Person]
+func get_age() int {
+    return self.age
+}
+
+[Person]
+func set_age(n int) {
+    self.age = n
+}
+
+[Person]
+func add_years(delta int) int {
+    self.age = self.age + delta
+    return self.age
+}
+
+// ─── Método con field y método del mismo nombre ─────────────────
+
+type Counter struct {
+    value int
+}
+
+[Counter]
+func value_of() int {
+    return self.value
+}
+
+[Counter]
+func bump() int {
+    self.value = self.value + 1
+    return self.value
+}
+
+// ─── Method value (sin paréntesis) ──────────────────────────────
+
+func apply_method() int {
+    var c = Counter { value: 10 }
+    var f = c.bump       // method value: closure que captura c
+    var x = f()          // llama a bump sobre c → 11
+    var y = f()          // → 12
+    return x + y         // 23
+}
+
+// ─── Main ───────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — MÉTODOS CON self")
+    println("══════════════════════════════════════════════")
+
+    section("1. Método básico")
+    var p = Person { name: "Ronaldo", age: 30 }
+    p.greet()
+    check(p.get_age(), 30, "get_age()")
+
+    section("2. Método que muta")
+    p.set_age(31)
+    check(p.get_age(), 31, "set_age(31)")
+
+    section("3. Método con args y retorno")
+    check(p.add_years(5), 36, "add_years(5)")
+    check(p.get_age(), 36, "get_age() después de add_years")
+
+    section("4. Método sobre literal")
+    check((Person { name: "X", age: 20 }).get_age(), 20, "literal.get_age()")
+
+    section("5. Método sobre resultado de función")
+    check((Person { name: "Y", age: 40 }).add_years(1), 41, "literal.add_years(1)")
+
+    section("6. Method value")
+    check(apply_method(), 23, "closure sobre Counter")
+
+    section("7. Llamada directa como función libre")
+    var q = Person { name: "Z", age: 50 }
+    check(get_age(q), 50, "get_age(q) via nombre de método")
+    
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

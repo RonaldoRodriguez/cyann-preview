@@ -3,7 +3,7 @@ import {
   MathNode, MathType, FunctionType, StructType, TypeRegistry,
   FunctionLiteralNode, ClosureNode, CaptureAccessNode,
   CapturedVar, VariableNode, ArithmeticType, PatternNode,
-  MakeArrayNode,
+  MakeArrayNode, CallNode, StructAccessNode,
 } from './types';
 import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
 import { arithInfo } from './typeSystem';
@@ -18,6 +18,7 @@ export interface SymbolInfo {
   overloads?: FunctionOverload[];
   boxed?: boolean;
 }
+
 export class ScopeControl {
   private scopes: Map<string, SymbolInfo>[] = [];
   private counter = 0;
@@ -114,6 +115,9 @@ export class SemanticAnalyzer {
   private capturedNamesStack: Set<string>[] = [];
   private typeAliases = new Map<string, MathType>();
 
+  private methodsByStruct = new Map<string, Map<string, FunctionOverload>>();
+  private syntheticCounter = 0;
+
   constructor() {
     this.scopeControl = new ScopeControl();
     this.typeRegistry = new TypeRegistry();
@@ -145,6 +149,8 @@ export class SemanticAnalyzer {
       this.scopeControl.declareFunction(b.name, b.name, fnType, true);
     }
   }
+
+  // ─── Escape analysis primitives ───────────────────────────────────
 
   private isHeapType(t: MathType): boolean {
     if (t === 'string') return true;
@@ -223,6 +229,8 @@ export class SemanticAnalyzer {
     }
     return false;
   }
+
+  // ─── Análisis de capturas (pre-pass) ──────────────────────────────
 
   private currentCapturedNames(): Set<string> | null {
     return this.capturedNamesStack.length > 0
@@ -356,6 +364,8 @@ export class SemanticAnalyzer {
     return captured;
   }
 
+  // ─── Entrada ──────────────────────────────────────────────────────
+
   public analyzeProgram(program: ProgramNode): void {
     this.currentLevel = 0;
     this.hoistedFunctions = [];
@@ -364,13 +374,14 @@ export class SemanticAnalyzer {
     this.lambdaCounter = 0;
     this.captureStack = [];
     this.capturedNamesStack = [];
+    this.methodsByStruct.clear();
 
     this.typeAliases.clear();
     this.collectTypeAliases(program.body);
     this.collectStructs(program.body);
     this.collectFunctions(program.body);
 
-    for (const stmt of program.body) this.analyzeStatement(stmt);
+        for (const stmt of program.body) this.analyzeStatement(stmt);
 
     for (const h of this.hoistedFunctions) program.body.push(h);
     this.hoistedFunctions = [];
@@ -381,7 +392,7 @@ export class SemanticAnalyzer {
       if (s.kind !== 'type_alias') continue;
       this.typeAliases.set(s.name, s.targetType);
     }
-  }
+  } // (thunkFn as any).__analyzed = true;
 
   private collectStructs(stmts: StatementNode[]): void {
     for (const s of stmts) {
@@ -405,13 +416,68 @@ export class SemanticAnalyzer {
   private collectFunctions(stmts: StatementNode[]): void {
     for (const s of stmts) {
       if (s.kind !== 'function_def') continue;
-      const paramTypes = s.params.map(p => this.resolveType(p.type));
-      const returnTypes = s.returnType === null ? [] : [this.resolveType(s.returnType)];
-      const fnType: FunctionType = { kind: 'function', paramTypes, returnTypes };
-      const mangledName = mangleFunctionName(s.name, paramTypes);
-      this.scopeControl.declareFunction(s.name, mangledName, fnType, true);
+      const fn = s as FunctionDefNode;
+
+      let receiverType: StructType | null = null;
+      if (fn.receiver) {
+        const rt = this.resolveType(fn.receiver);
+        if (typeof rt !== 'object' || rt.kind !== 'struct') {
+          throw new Error(
+            `Receiver de '${fn.name}' debe ser un struct, se obtuvo ${this.typeName(rt)}`
+          );
+        }
+        if (rt.name === '') {
+          throw new Error(`Receiver de '${fn.name}' no puede ser un struct anónimo`);
+        }
+        receiverType = rt;
+      }
+
+      const userParamTypes = fn.params.map(p => this.resolveType(p.type));
+      const allParamTypes = receiverType
+        ? [receiverType, ...userParamTypes]
+        : userParamTypes;
+      const returnTypes = fn.returnType === null
+        ? []
+        : [this.resolveType(fn.returnType)];
+      const fnType: FunctionType = {
+        kind: 'function',
+        paramTypes: allParamTypes,
+        returnTypes,
+      };
+      const mangledName = mangleFunctionName(fn.name, allParamTypes);
+
+      if (receiverType) {
+        this.registerMethod(receiverType.name, fn.name, mangledName, fnType);
+      }
+
+      this.scopeControl.declareFunction(fn.name, mangledName, fnType, true);
     }
   }
+
+  // ─── Registro de métodos ──────────────────────────────────────────
+
+  private registerMethod(
+    receiverName: string,
+    methodName: string,
+    mangled: string,
+    type: FunctionType,
+  ): void {
+    let methods = this.methodsByStruct.get(receiverName);
+    if (!methods) {
+      methods = new Map();
+      this.methodsByStruct.set(receiverName, methods);
+    }
+    methods.set(methodName, { mangledName: mangled, type });
+  }
+
+  private lookupMethod(
+    receiverName: string,
+    methodName: string,
+  ): FunctionOverload | undefined {
+    return this.methodsByStruct.get(receiverName)?.get(methodName);
+  }
+
+  // ─── Statements ───────────────────────────────────────────────────
 
   public analyzeStatement(stmt: StatementNode): void {
     switch (stmt.kind) {
@@ -506,7 +572,7 @@ export class SemanticAnalyzer {
       }
 
       case 'function_def':
-        this.analyzeFunction(stmt);
+        this.analyzeFunction(stmt as FunctionDefNode);
         break;
 
       case 'struct_def':
@@ -628,42 +694,108 @@ export class SemanticAnalyzer {
     }
   }
 
-  private analyzeFunction(fn: FunctionDefNode): void {
-    const paramTypes = fn.params.map(p => this.resolveType(p.type));
-    const returnTypes = fn.returnType === null ? [] : [this.resolveType(fn.returnType)];
-    const fnType: FunctionType = { kind: 'function', paramTypes, returnTypes };
+  // ─── Función ──────────────────────────────────────────────────────
 
+  private analyzeFunction(fn: FunctionDefNode): void {
+    // 1. Resolver el receiver si existe.
+    let receiverType: StructType | null = null;
+    if (fn.receiver) {
+      const rt = this.resolveType(fn.receiver);
+      if (typeof rt !== 'object' || rt.kind !== 'struct') {
+        throw new Error(
+          `Receiver de '${fn.name}' debe ser un struct, se obtuvo ${this.typeName(rt)}`
+        );
+      }
+      receiverType = rt;
+    }
+
+    // 2. Verificar que no haya un parámetro llamado `self`.
+    if (receiverType) {
+      for (const p of fn.params) {
+        if (p.name === 'self') {
+          throw new Error(
+            `'self' está reservado como receiver en el método '${fn.name}'; ` +
+            `renombrá el parámetro.`
+          );
+        }
+      }
+    }
+
+    // 3. Calcular tipos completos (con receiver).
+    const userParamTypes = fn.params.map(p => this.resolveType(p.type));
+    const allParamTypes = receiverType
+      ? [receiverType, ...userParamTypes]
+      : userParamTypes;
+    const returnTypes = fn.returnType === null
+      ? []
+      : [this.resolveType(fn.returnType)];
+    const fnType: FunctionType = {
+      kind: 'function',
+      paramTypes: allParamTypes,
+      returnTypes,
+    };
+
+    // 4. Mangled name.
     const sourceName = fn.name;
     const isLambda = sourceName.startsWith('__lambda_');
-    const mangledName = isLambda ? sourceName : mangleFunctionName(sourceName, paramTypes);
+    const mangledName = isLambda
+      ? sourceName
+      : mangleFunctionName(sourceName, allParamTypes);
 
-    if (!isLambda) {
-      this.scopeControl.declareFunction(sourceName, mangledName, fnType, this.scopeControl.isGlobal());
+    // 5. Declarar en scopeControl (los métodos ya fueron declarados por collectFunctions).
+    if (isLambda) {
+      this.scopeControl.declareFunction(sourceName, mangledName, fnType, false);
+    } else if (!receiverType) {
+      this.scopeControl.declareFunction(
+        sourceName, mangledName, fnType, this.scopeControl.isGlobal()
+      );
     }
     (fn as any).mangledName = mangledName;
 
-    const capturedNames = this.findCapturedVars(fn.params, fn.body);
-    this.capturedNamesStack.push(capturedNames);
-
+    // 6. Guardar estado.
     const prevReturn = this.currentReturnType;
     const prevLevel = this.currentLevel;
-
-    this.currentReturnType = fn.returnType === null ? null : this.resolveType(fn.returnType);
+    this.currentReturnType = fn.returnType === null
+      ? null
+      : this.resolveType(fn.returnType);
     this.currentLevel = 0;
 
     this.scopeControl.pushScope();
-    for (const param of fn.params) {
+
+    // 7. Prepender `self` a fn.params si es método.
+    if (receiverType) {
+      const selfUnique = this.scopeControl.declare(
+        'self', receiverType, true, false, false
+      );
+      fn.params = [
+        { name: 'self', type: receiverType, uniqueName: selfUnique },
+        ...fn.params,
+      ];
+      this.slotLevels.set(selfUnique, 0);
+    }
+
+    // 8. Analizar capturas (con self ya en params).
+    const capturedNames = this.findCapturedVars(fn.params, fn.body);
+    this.capturedNamesStack.push(capturedNames);
+
+    // 9. Declarar params del usuario (saltando self).
+    const userParamStart = receiverType ? 1 : 0;
+    for (let i = userParamStart; i < fn.params.length; i++) {
+      const param = fn.params[i];
+      const paramType = this.resolveType(param.type);
       const isBoxed = capturedNames.has(param.name);
       const uniqueName = this.scopeControl.declare(
-        param.name, this.resolveType(param.type), true, false, isBoxed
+        param.name, paramType, true, false, isBoxed
       );
       (param as any).uniqueName = uniqueName;
       if (isBoxed) (param as any).boxed = true;
       this.slotLevels.set(uniqueName, 0);
     }
 
+    // 10. Analizar cuerpo.
     for (const stmt of fn.body) this.analyzeStatement(stmt);
 
+    // 11. Verificar retorno en todos los caminos.
     if (fn.returnType !== null && !this.allPathsReturn(fn.body)) {
       throw new Error(
         `La función '${sourceName}' no retorna en todos los caminos ` +
@@ -671,14 +803,17 @@ export class SemanticAnalyzer {
       );
     }
 
+    // 12. Restaurar.
     this.currentReturnType = prevReturn;
     this.currentLevel = prevLevel;
     this.scopeControl.popScope();
     this.capturedNamesStack.pop();
 
+    // 13. Renombrar al mangled final.
     fn.name = mangledName;
   }
 
+  /** Tipos que se pueden usar como expr de un switch. */
   private isComparableType(t: MathType): boolean {
     if (this.isArithmetic(t)) return true;
     if (t === 'string' || t === 'bool') return true;
@@ -688,6 +823,7 @@ export class SemanticAnalyzer {
     return false;
   }
 
+  /** Verifica que un pattern sea válido para el tipo del switch. */
   private analyzePattern(pattern: PatternNode, targetType: MathType): void {
     const t = this.resolveType(targetType);
 
@@ -754,6 +890,8 @@ export class SemanticAnalyzer {
       }
     }
   }
+
+  // ─── Expresiones ──────────────────────────────────────────────────
 
   public analyzeExpression(node: MathNode): MathType {
     switch (node.kind) {
@@ -980,6 +1118,58 @@ export class SemanticAnalyzer {
       }
 
       case 'call_indirect': {
+        // ── Prepass: `p.metodo(args)` → desugaring a `metodo__SP(p, args)`
+        if (node.callee.kind === 'struct_access') {
+          const sa = node.callee as StructAccessNode;
+          const baseTypeRaw = this.resolveType(this.analyzeExpression(sa.base));
+          const baseType = typeof baseTypeRaw === 'object' && baseTypeRaw.kind === 'pointer'
+            ? this.resolveType(baseTypeRaw.targetType)
+            : baseTypeRaw;
+
+          if (typeof baseType === 'object' && baseType.kind === 'struct' && baseType.name !== '') {
+            const field = baseType.fields.find(c => c.name === sa.fieldName);
+            if (!field) {
+              const method = this.lookupMethod(baseType.name, sa.fieldName);
+              if (method) {
+                const argTypes: MathType[] = [];
+                for (const arg of node.args) {
+                  argTypes.push(this.resolveType(this.analyzeExpression(arg)));
+                }
+                const expected = method.type.paramTypes.slice(1);
+
+                if (argTypes.length !== expected.length) {
+                  throw new Error(
+                    `Método '${sa.fieldName}' de '${baseType.name}': ` +
+                    `se esperaban ${expected.length} argumentos, ` +
+                    `se recibieron ${argTypes.length}`
+                  );
+                }
+                for (let i = 0; i < argTypes.length; i++) {
+                  if (!this.isAssignableType(argTypes[i], expected[i])) {
+                    throw new Error(
+                      `Argumento ${i} de '${sa.fieldName}': se esperaba ` +
+                      `${this.typeName(expected[i])}, se obtuvo ${this.typeName(argTypes[i])}`
+                    );
+                  }
+                }
+
+                // Desugaring in-place: `p.foo(a, b)` → `foo__SP(p, a, b)`.
+                const newCall: any = node;
+                newCall.kind = 'call';
+                newCall.name = method.mangledName;
+                newCall.args = [sa.base, ...node.args];
+                newCall.paramTypes = method.type.paramTypes;
+                newCall.type = method.type.returnTypes[0] ?? 'void';
+                return newCall.type;
+              }
+
+              throw new Error(`Campo '${sa.fieldName}' no existe en '${baseType.name}'`);
+            }
+            // Es un campo: caer al análisis normal de call_indirect.
+          }
+        }
+
+        // ── Análisis normal.
         const calleeType = this.resolveType(this.analyzeExpression(node.callee));
         if (typeof calleeType !== 'object' || calleeType.kind !== 'function') {
           throw new Error('call_indirect: el callee no es de tipo función');
@@ -1140,13 +1330,29 @@ export class SemanticAnalyzer {
         const baseType = typeof expressionType === 'object' && expressionType.kind === 'pointer'
           ? this.resolveType(expressionType.targetType) : expressionType;
         if (typeof baseType !== 'object' || baseType.kind !== 'struct') {
-          throw new Error(`No se puede acceder al campo '${node.fieldName}' en un valor de tipo ${this.typeName(baseType)}`);
+          throw new Error(
+            `No se puede acceder al campo '${node.fieldName}' en un valor ` +
+            `de tipo ${this.typeName(baseType)}`
+          );
         }
+
+        // Prioridad: campo primero.
         const field = baseType.fields.find(c => c.name === node.fieldName);
-        if (!field) throw new Error(`Campo '${node.fieldName}' no existe en '${baseType.name}'`);
-        node.resolvedBaseType = baseType;
-        node.type = this.resolveType(field.type);
-        return node.type;
+        if (field) {
+          node.resolvedBaseType = baseType;
+          node.type = this.resolveType(field.type);
+          return node.type;
+        }
+
+        // Sin campo: probar como método (method value).
+        if (baseType.name !== '') {
+          const method = this.lookupMethod(baseType.name, node.fieldName);
+          if (method) {
+            return this.buildMethodValue(node, baseType, method);
+          }
+        }
+
+        throw new Error(`Campo '${node.fieldName}' no existe en '${baseType.name}'`);
       }
 
       case 'array_literal': {
@@ -1195,6 +1401,105 @@ export class SemanticAnalyzer {
       default: return 's32';
     }
   }
+
+  // ─── Method value ────────────────────────────────────────────────
+
+  /**
+   * Convierte `p.metodo` (sin paréntesis) en un closure que captura `p`.
+   *
+   * El closure usa un thunk hoisteado `__lambda_N` cuyo único propósito
+   * es extraer `self` del env y llamar al método real.
+   *
+   * El nodo original (`struct_access`) se muta in-place a un `closure`.
+   * La firma del method value es la del método SIN el parámetro `self`.
+   */
+  private buildMethodValue(
+    node: StructAccessNode,
+    receiverType: StructType,
+    method: FunctionOverload,
+  ): MathType {
+    const fullFnType = method.type;
+    const valueParams = fullFnType.paramTypes.slice(1);
+    const returnTypes = fullFnType.returnTypes;
+
+    const thunkName = `__lambda_${this.lambdaCounter++}`;
+    const baseExpr = node.base;
+
+    // `self` viene de la captura 0 del env del closure.
+    const selfRef: CaptureAccessNode = {
+      kind: 'capture_access',
+      captureIndex: 0,
+      type: receiverType,
+    };
+
+    const paramNames = valueParams.map((_, i) => `a${i}`);
+    const paramUniqueNames = paramNames.map(
+      n => `$${n}_${this.syntheticCounter++}`
+    );
+
+    const paramRefs: MathNode[] = paramNames.map((n, i) => ({
+      kind: 'variable',
+      name: n,
+      uniqueName: paramUniqueNames[i],
+      isGlobal: false,
+      type: valueParams[i],
+    } as VariableNode));
+
+    const innerCall: CallNode = {
+      kind: 'call',
+      name: method.mangledName,
+      args: [selfRef, ...paramRefs],
+      paramTypes: fullFnType.paramTypes,
+      type: returnTypes[0] ?? 'void',
+    };
+
+    const thunkBody: StatementNode[] = returnTypes.length > 0
+      ? [{ kind: 'return', value: innerCall }]
+      : [{ kind: 'expression_stmt', expr: innerCall }];
+
+    const thunkFn: FunctionDefNode = {
+      kind: 'function_def',
+      name: thunkName,
+      params: valueParams.map((t, i) => ({
+        name: paramNames[i],
+        type: t,
+        uniqueName: paramUniqueNames[i],
+      })),
+      returnType: returnTypes[0] ?? null,
+      body: thunkBody,
+      mangledName: thunkName,
+    };
+
+    // Marcar como ya analizado. `analyzeProgram` lo va a empujar a
+    // program.body sin re-analizarlo.
+    this.hoistedFunctions.push(thunkFn);
+
+    // Firma del method value (sin self).
+    const valueFnType: FunctionType = {
+      kind: 'function',
+      paramTypes: valueParams,
+      returnTypes,
+    };
+
+    // Mutar el nodo a closure.
+    (node as any).kind = 'closure';
+    (node as any).codeName = thunkName;
+    (node as any).captures = [{
+      name: 'self',
+      sourceUniqueName: 'method_value_self',
+      type: receiverType,
+      index: 0,
+    }];
+    (node as any).captureExprs = [baseExpr];
+    (node as any).type = valueFnType;
+
+    delete (node as any).fieldName;
+    delete (node as any).resolvedBaseType;
+
+    return valueFnType;
+  }
+
+  // ─── Helpers de tipos ─────────────────────────────────────────────
 
   private canonicalizeAnonStruct(fields: { name: string; type: MathType }[]): string {
     const key = fields.map(f => `${f.name}:${mangleType(f.type)}`).join(';');
@@ -1540,3 +1845,5 @@ export class SemanticAnalyzer {
     return false;
   }
 }
+
+// for (const stmt of program.body) this.analyzeStatement(stmt);
