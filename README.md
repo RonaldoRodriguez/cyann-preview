@@ -1,3 +1,4 @@
+![CI](https://github.com/RonaldoRodriguez/cyann-preview/actions/workflows/ci.yml/badge.svg)
 # Cyann Preview
 
 Un lenguaje de programación experimental que compila a WebAssembly sin recolector de basura, inspirado en Go, diseñado para ser legible, predecible y explícito sobre dónde vive cada byte.
