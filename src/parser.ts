@@ -6,7 +6,7 @@ import {
 } from './types';
 
 // ─── Nodos ────────────────────────────────────────────────────────────────
-// export interface MultiDeclNode {
+
 export interface VarConstNode {
   kind: 'var_decl' | 'const_decl';
   name: string;
@@ -215,23 +215,18 @@ export class Parser {
   }
 
   private parseStatementStartingWithIdentifier(name: string): StatementNode {
-    // Multi-decl con `:=`: `a, b := expr`
+    // Multi-decl: `a, b = expr` (requiere que a, b ya existan, pero el
+    // semantic lo valida; el parser sólo construye el nodo).
     if (this.matchToken('SYMBOL', ',')) {
       const names = [name];
       do {
         names.push(this.expectToken('IDENTIFIER'));
       } while (this.matchToken('SYMBOL', ','));
 
-      this.expectToken('SYMBOL', ':=');
+      this.expectToken('SYMBOL', '=');
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
       return { kind: 'multi_decl', names, expr };
-    }
-
-    if (this.matchToken('SYMBOL', ':=')) {
-      const expr = this.parseExpression();
-      this.matchToken('SYMBOL', ';');
-      return { kind: 'short_var_decl', name, expr };
     }
 
     if (this.currentToken.value === '(') {

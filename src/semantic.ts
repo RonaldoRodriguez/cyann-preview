@@ -8,6 +8,24 @@ import {
 import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
 import { arithInfo } from './typeSystem';
 
+// ─── Acumulador de diagnósticos ───────────────────────────────────────────
+
+class DiagnosticBag {
+  private errors: string[] = [];
+
+  error(msg: string): void {
+    this.errors.push(msg);
+  }
+
+  hasErrors(): boolean {
+    return this.errors.length > 0;
+  }
+
+  getErrors(): string[] {
+    return [...this.errors];
+  }
+}
+
 export interface FunctionOverload { mangledName: string; type: FunctionType; }
 export interface SymbolInfo {
   uniqueName: string;
@@ -118,6 +136,12 @@ export class SemanticAnalyzer {
   private methodsByStruct = new Map<string, Map<string, FunctionOverload>>();
   private syntheticCounter = 0;
 
+  private diagnostics = new DiagnosticBag();
+
+  private error(msg: string): void {
+    this.diagnostics.error(msg);
+  }
+
   constructor() {
     this.scopeControl = new ScopeControl();
     this.typeRegistry = new TypeRegistry();
@@ -191,7 +215,7 @@ export class SemanticAnalyzer {
     if (!value) return;
     const lvl = this.exprLevel(value);
     if (lvl > slotLevel) {
-      throw new Error(
+      this.error(
         `Escapado de región en ${ctx}: el valor proviene del nivel ${lvl}, ` +
         `pero se almacena en un slot del nivel ${slotLevel}`
       );
@@ -375,6 +399,7 @@ export class SemanticAnalyzer {
     this.captureStack = [];
     this.capturedNamesStack = [];
     this.methodsByStruct.clear();
+    this.diagnostics = new DiagnosticBag();
 
     this.typeAliases.clear();
     this.collectTypeAliases(program.body);
@@ -385,6 +410,14 @@ export class SemanticAnalyzer {
 
     for (const h of this.hoistedFunctions) program.body.push(h);
     this.hoistedFunctions = [];
+
+    if (this.diagnostics.hasErrors()) {
+      const errs = this.diagnostics.getErrors();
+      throw new Error(
+        `Se encontraron ${errs.length} error${errs.length === 1 ? '' : 'es'}:\n` +
+        errs.map((e, i) => `  ${i + 1}. ${e}`).join('\n')
+      );
+    }
   }
 
   private collectTypeAliases(stmts: StatementNode[]): void {
@@ -422,12 +455,14 @@ export class SemanticAnalyzer {
       if (fn.receiver) {
         const rt = this.resolveType(fn.receiver);
         if (typeof rt !== 'object' || rt.kind !== 'struct') {
-          throw new Error(
+          this.error(
             `Receiver de '${fn.name}' debe ser un struct, se obtuvo ${this.typeName(rt)}`
           );
+          continue;
         }
         if (rt.name === '') {
-          throw new Error(`Receiver de '${fn.name}' no puede ser un struct anónimo`);
+          this.error(`Receiver de '${fn.name}' no puede ser un struct anónimo`);
+          continue;
         }
         receiverType = rt;
       }
@@ -502,7 +537,7 @@ export class SemanticAnalyzer {
             this.contextualizeArrayLiteral(stmt.initExpr, declaredType);
           if (contextualized) finalType = declaredType;
           else if (!(initType === 'null' && typeof declaredType === 'object')) {
-            throw new Error(
+            this.error(
               `Type mismatch: no se puede asignar ${this.typeName(initType)} a '${stmt.name}' ` +
               `de tipo ${this.typeName(declaredType)}`
             );
@@ -539,19 +574,20 @@ export class SemanticAnalyzer {
         const md = stmt as MultiDeclNode;
         const firstType = this.resolveType(this.analyzeExpression(md.expr));
 
-        // El call debe haber poblado returnTypes con >= 2 valores.
         const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
         if (!returnTypes || returnTypes.length === 0) {
-          throw new Error(
+          this.error(
             `multi-declaración requiere una llamada con múltiples valores ` +
             `de retorno; se obtuvo un valor de tipo ${this.typeName(firstType)}`
           );
+          break;
         }
         if (returnTypes.length !== md.names.length) {
-          throw new Error(
+          this.error(
             `multi-declaración de ${md.names.length} nombres pero ` +
             `la expresión retorna ${returnTypes.length} valores`
           );
+          break;
         }
 
         md.uniqueNames = [];
@@ -566,9 +602,6 @@ export class SemanticAnalyzer {
           md.uniqueNames.push(uniqueName);
           this.slotLevels.set(uniqueName, this.currentLevel);
         }
-
-        // El call en sí ya fue analizado; los valores retornados son
-        // referencias del heap que pertenecen al nivel actual.
         break;
       }
 
@@ -582,7 +615,10 @@ export class SemanticAnalyzer {
         if (root.kind === 'capture_access') {
           // OK
         } else {
-          if (root.kind !== 'variable') throw new Error('El destino no es modificable');
+          if (root.kind !== 'variable') {
+            this.error('El destino no es modificable');
+            break;
+          }
           this.scopeControl.checkMutable(root.name);
           const slotLvl = this.slotLevelOfTarget(stmt.target);
           this.checkEscape(stmt.expr, slotLvl, `asignación a '${root.name}'`);
@@ -593,7 +629,7 @@ export class SemanticAnalyzer {
         if (!this.isAssignableType(exprType, targetType)) {
           const contextualized = this.contextualizeArrayLiteral(stmt.expr, targetType);
           if (!contextualized && !(exprType === 'null' && typeof targetType !== 'string')) {
-            throw new Error(
+            this.error(
               `Type mismatch en asignación: no se puede asignar ${this.typeName(exprType)} ` +
               `a un destino de tipo ${this.typeName(targetType)}`
             );
@@ -612,7 +648,7 @@ export class SemanticAnalyzer {
 
       case 'if': {
         const condType = this.analyzeExpression(stmt.condition);
-        if (condType !== 'bool') throw new Error('La condición del if debe ser bool');
+        if (condType !== 'bool') this.error('La condición del if debe ser bool');
         this.scopeControl.pushScope();
         for (const s of stmt.thenBlock) this.analyzeStatement(s);
         this.scopeControl.popScope();
@@ -630,7 +666,7 @@ export class SemanticAnalyzer {
         if (stmt.init) this.analyzeStatement(stmt.init);
         if (stmt.condition) {
           const condType = this.analyzeExpression(stmt.condition);
-          if (condType !== 'bool') throw new Error('La condición del for debe ser bool');
+          if (condType !== 'bool') this.error('La condición del for debe ser bool');
         }
         if (stmt.post) this.analyzeStatement(stmt.post);
         for (const s of stmt.body) this.analyzeStatement(s);
@@ -642,7 +678,8 @@ export class SemanticAnalyzer {
         const iterableType = this.resolveType(this.analyzeExpression(stmt.iterable));
         if (typeof iterableType !== 'object' ||
             (iterableType.kind !== 'array' && iterableType.kind !== 'dynarray')) {
-          throw new Error(`for ... in: se esperaba un array, se obtuvo ${this.typeName(iterableType)}`);
+          this.error(`for ... in: se esperaba un array, se obtuvo ${this.typeName(iterableType)}`);
+          break;
         }
         this.scopeControl.pushScope();
         const uniqueName = this.scopeControl.declare(stmt.varName, iterableType.elementType, true, false);
@@ -659,9 +696,8 @@ export class SemanticAnalyzer {
         stmt.exprType = condType;
 
         if (!this.isComparableType(condType)) {
-          throw new Error(
-            `switch: tipo no comparable (${this.typeName(condType)})`
-          );
+          this.error(`switch: tipo no comparable (${this.typeName(condType)})`);
+          break;
         }
 
         for (const c of stmt.cases) {
@@ -704,22 +740,23 @@ export class SemanticAnalyzer {
 
         if (expected.length === 0) {
           if (actualTypes.length > 0) {
-            throw new Error('La función no debe retornar valores');
+            this.error('La función no debe retornar valores');
           }
         } else {
           if (actualTypes.length !== expected.length) {
-            throw new Error(
+            this.error(
               `Se esperaban ${expected.length} valores de retorno, ` +
               `se recibieron ${actualTypes.length}`
             );
-          }
-          for (let i = 0; i < expected.length; i++) {
-            if (!this.isAssignableType(actualTypes[i], expected[i])) {
-              if (!(actualTypes[i] === 'null' && typeof expected[i] !== 'string')) {
-                throw new Error(
-                  `Tipo de retorno ${i} incorrecto: se esperaba ` +
-                  `${this.typeName(expected[i])}, se obtuvo ${this.typeName(actualTypes[i])}`
-                );
+          } else {
+            for (let i = 0; i < expected.length; i++) {
+              if (!this.isAssignableType(actualTypes[i], expected[i])) {
+                if (!(actualTypes[i] === 'null' && typeof expected[i] !== 'string')) {
+                  this.error(
+                    `Tipo de retorno ${i} incorrecto: se esperaba ` +
+                    `${this.typeName(expected[i])}, se obtuvo ${this.typeName(actualTypes[i])}`
+                  );
+                }
               }
             }
           }
@@ -740,9 +777,10 @@ export class SemanticAnalyzer {
     if (fn.receiver) {
       const rt = this.resolveType(fn.receiver);
       if (typeof rt !== 'object' || rt.kind !== 'struct') {
-        throw new Error(
+        this.error(
           `Receiver de '${fn.name}' debe ser un struct, se obtuvo ${this.typeName(rt)}`
         );
+        return;
       }
       receiverType = rt;
     }
@@ -750,7 +788,7 @@ export class SemanticAnalyzer {
     if (receiverType) {
       for (const p of fn.params) {
         if (p.name === 'self') {
-          throw new Error(
+          this.error(
             `'self' está reservado como receiver en el método '${fn.name}'; ` +
             `renombrá el parámetro.`
           );
@@ -821,7 +859,7 @@ export class SemanticAnalyzer {
     for (const stmt of fn.body) this.analyzeStatement(stmt);
 
     if (fn.returnTypes.length > 0 && !this.allPathsReturn(fn.body)) {
-      throw new Error(
+      this.error(
         `La función '${sourceName}' no retorna en todos los caminos ` +
         `(se esperaba${returnTypes.length > 1 ? 'n ' : ' '}` +
         `${returnTypes.map(t => this.typeName(t)).join(', ')})`
@@ -857,52 +895,50 @@ export class SemanticAnalyzer {
           if (!(typeof t === 'object' &&
                 (t.kind === 'pointer' || t.kind === 'struct' ||
                  t.kind === 'dynarray' || t.kind === 'function'))) {
-            throw new Error(`Patrón null no válido para tipo ${this.typeName(t)}`);
+            this.error(`Patrón null no válido para tipo ${this.typeName(t)}`);
           }
           return;
         }
         if (!this.isArithmetic(t)) {
-          throw new Error(
-            `Patrón numérico no válido para tipo ${this.typeName(t)}`
-          );
+          this.error(`Patrón numérico no válido para tipo ${this.typeName(t)}`);
+          return;
         }
         return;
       }
 
       case 'string':
         if (t !== 'string') {
-          throw new Error(`Patrón string no válido para tipo ${this.typeName(t)}`);
+          this.error(`Patrón string no válido para tipo ${this.typeName(t)}`);
         }
         return;
 
       case 'bool':
         if (t !== 'bool') {
-          throw new Error(`Patrón bool no válido para tipo ${this.typeName(t)}`);
+          this.error(`Patrón bool no válido para tipo ${this.typeName(t)}`);
         }
         return;
 
       case 'struct': {
         if (typeof t !== 'object' || t.kind !== 'struct') {
-          throw new Error(
-            `Patrón struct no válido para tipo ${this.typeName(t)}`
-          );
+          this.error(`Patrón struct no válido para tipo ${this.typeName(t)}`);
+          return;
         }
         if (t.name !== pattern.structName) {
-          throw new Error(
-            `Patrón struct '${pattern.structName}' no coincide con '${t.name}'`
-          );
+          this.error(`Patrón struct '${pattern.structName}' no coincide con '${t.name}'`);
+          return;
         }
         const provided = new Set(pattern.fields.map(f => f.name));
         for (const fp of pattern.fields) {
           const field = t.fields.find(f => f.name === fp.name);
           if (!field) {
-            throw new Error(`Campo '${fp.name}' no existe en '${t.name}'`);
+            this.error(`Campo '${fp.name}' no existe en '${t.name}'`);
+            continue;
           }
           this.analyzePattern(fp.pattern, field.type);
         }
         const missing = t.fields.filter(f => !provided.has(f.name)).map(f => f.name);
         if (missing.length > 0) {
-          throw new Error(
+          this.error(
             `Faltan campos en patrón '${t.name}': ${missing.join(', ')}. ` +
             `Usa '_' como wildcard para los que no te importan.`
           );
@@ -918,12 +954,22 @@ export class SemanticAnalyzer {
       case 'const': return node.type === 'null' ? 'null' : node.type;
 
       case 'variable': {
-        const { info: symbol, isCapture } = this.scopeControl.lookupWithBoundary(node.name);
+        let lookup: { info: SymbolInfo; isCapture: boolean };
+        try {
+          lookup = this.scopeControl.lookupWithBoundary(node.name);
+        } catch (e) {
+          this.error(`Identificador no definido: '${node.name}'`);
+          node.type = 's32';
+          return 's32';
+        }
+        const { info: symbol, isCapture } = lookup;
 
         if (symbol.isFunctionDecl) {
           const ovs = symbol.overloads!;
           if (ovs.length !== 1) {
-            throw new Error(`'${node.name}' tiene ${ovs.length} sobrecargas; especifica los tipos para usarla como valor`);
+            this.error(`'${node.name}' tiene ${ovs.length} sobrecargas; especifica los tipos para usarla como valor`);
+            node.type = 's32';
+            return 's32';
           }
           (node as any).kind = 'function_ref';
           (node as any).name = ovs[0].mangledName;
@@ -971,10 +1017,10 @@ export class SemanticAnalyzer {
       case 'unary': {
         const operandType = this.analyzeExpression(node.operand);
         if (node.op === 'not' && operandType !== 'bool') {
-          throw new Error("El operador '!' requiere un bool");
+          this.error("El operador '!' requiere un bool");
         }
         if (node.op === 'bitnot' && (operandType === 'f32' || operandType === 'f64')) {
-          throw new Error("El operador '~' no acepta flotantes");
+          this.error("El operador '~' no acepta flotantes");
         }
         node.type = operandType;
         return operandType;
@@ -1002,20 +1048,22 @@ export class SemanticAnalyzer {
           (to === 'bool' && (from === 's32' || from === 'u32'));
         if (boolBridge) return to;
         if (this.isArithmetic(from) && this.isArithmetic(to)) return to;
-        throw new Error(`cast no soportado: ${this.typeName(from)} → ${this.typeName(to)}`);
+        this.error(`cast no soportado: ${this.typeName(from)} → ${this.typeName(to)}`);
+        return to;
       }
 
       case 'make_array': {
         const n = node as MakeArrayNode;
         const resolvedType = this.resolveType(n.typeExpr);
         if (typeof resolvedType !== 'object' || resolvedType.kind !== 'dynarray') {
-          throw new Error(
+          this.error(
             `make() requiere un dynarray, se obtuvo ${this.typeName(resolvedType)}`
           );
+          return 's32';
         }
         const lenType = this.analyzeExpression(n.lengthExpr);
         if (lenType !== 's32' && lenType !== 'u32') {
-          throw new Error('make() requiere longitud entera');
+          this.error('make() requiere longitud entera');
         }
         n.elementType = resolvedType.elementType;
         n.type = resolvedType;
@@ -1038,21 +1086,25 @@ export class SemanticAnalyzer {
           if (at1 === 'null') common = at2;
           else if (at2 === 'null') common = at1;
           else if (this.typesEqual(at1, at2)) common = at1;
-          else throw new Error(
-            `is_same: los dos args deben ser del mismo tipo ` +
-            `(${this.typeName(at1)} vs ${this.typeName(at2)})`
-          );
+          else {
+            this.error(
+              `is_same: los dos args deben ser del mismo tipo ` +
+              `(${this.typeName(at1)} vs ${this.typeName(at2)})`
+            );
+            return 's32';
+          }
 
           const isRef = typeof common === 'string'
             ? (common === 'string')
             : (common.kind === 'struct' || common.kind === 'pointer' ||
                common.kind === 'dynarray' || common.kind === 'function');
           if (!isRef) {
-            throw new Error(
+            this.error(
               `is_same requiere un tipo referencia (struct, pointer, ` +
               `dynarray, string, fn); se obtuvo ${this.typeName(common)}. ` +
               `Usa '==' para primitivos.`
             );
+            return 's32';
           }
 
           node.paramTypes = [common, common];
@@ -1063,7 +1115,8 @@ export class SemanticAnalyzer {
         if (node.name === 'len' && node.args.length === 1 && !this.scopeControl.has('len')) {
           const at = this.resolveType(this.analyzeExpression(node.args[0]));
           if (typeof at !== 'object' || (at.kind !== 'array' && at.kind !== 'dynarray')) {
-            throw new Error(`len() requiere un array/dynarray, se obtuvo ${this.typeName(at)}`);
+            this.error(`len() requiere un array/dynarray, se obtuvo ${this.typeName(at)}`);
+            return 's32';
           }
           node.paramTypes = [at];
           node.type = 's32';
@@ -1074,7 +1127,10 @@ export class SemanticAnalyzer {
         const argTypes: MathType[] = [];
         for (const arg of node.args) argTypes.push(this.resolveType(this.analyzeExpression(arg)));
 
-        if (!this.scopeControl.has(node.name)) throw new Error(`Identificador no definido: '${node.name}'`);
+        if (!this.scopeControl.has(node.name)) {
+          this.error(`Identificador no definido: '${node.name}'`);
+          return 's32';
+        }
         const sym = this.scopeControl.lookup(node.name);
 
         if (sym.isFunctionDecl) {
@@ -1083,10 +1139,11 @@ export class SemanticAnalyzer {
           for (const ov of overloads) if (this.argTypesMatchExact(ov.type.paramTypes, argTypes)) { chosen = ov; break; }
           if (!chosen) for (const ov of overloads) if (this.argTypesMatchWithBridge(ov.type.paramTypes, argTypes)) { chosen = ov; break; }
           if (!chosen) {
-            throw new Error(
+            this.error(
               `Ninguna sobrecarga de '${node.name}' coincide con ` +
               `[${argTypes.map(t => this.typeName(t)).join(', ')}]`
             );
+            return 's32';
           }
           for (let i = 0; i < argTypes.length; i++) {
             const at = argTypes[i];
@@ -1095,7 +1152,10 @@ export class SemanticAnalyzer {
               (at === 'string' && (et === 's32' || et === 'u32')) ||
               (et === 'string' && (at === 's32' || at === 'u32'));
             if (!this.isAssignableType(at, et) && !bridge) {
-              throw new Error(`Argumento ${i} de '${node.name}': se esperaba ${this.typeName(et)}, se obtuvo ${this.typeName(at)}`);
+              this.error(
+                `Argumento ${i} de '${node.name}': se esperaba ` +
+                `${this.typeName(et)}, se obtuvo ${this.typeName(at)}`
+              );
             }
           }
           node.name = chosen.mangledName;
@@ -1112,7 +1172,11 @@ export class SemanticAnalyzer {
           const calleeType = this.resolveType(this.analyzeExpression(calleeVar)) as FunctionType;
           const params = calleeType.paramTypes.map(t => this.resolveType(t));
           if (argTypes.length !== params.length) {
-            throw new Error(`Llamada indirecta a '${node.name}': se esperaban ${params.length} args, se recibieron ${argTypes.length}`);
+            this.error(
+              `Llamada indirecta a '${node.name}': se esperaban ${params.length} ` +
+              `args, se recibieron ${argTypes.length}`
+            );
+            return 's32';
           }
           for (let i = 0; i < argTypes.length; i++) {
             const at = argTypes[i]; const et = params[i];
@@ -1120,7 +1184,10 @@ export class SemanticAnalyzer {
               (at === 'string' && (et === 's32' || et === 'u32')) ||
               (et === 'string' && (at === 's32' || at === 'u32'));
             if (!this.isAssignableType(at, et) && !bridge) {
-              throw new Error(`Argumento ${i} de la llamada indirecta a '${node.name}': se esperaba ${this.typeName(et)}, se obtuvo ${this.typeName(at)}`);
+              this.error(
+                `Argumento ${i} de la llamada indirecta a '${node.name}': ` +
+                `se esperaba ${this.typeName(et)}, se obtuvo ${this.typeName(at)}`
+              );
             }
           }
           const c = node as any;
@@ -1134,7 +1201,8 @@ export class SemanticAnalyzer {
           c.type = returnType;
           return returnType;
         }
-        throw new Error(`'${node.name}' no es una función`);
+        this.error(`'${node.name}' no es una función`);
+        return 's32';
       }
 
       case 'call_indirect': {
@@ -1157,15 +1225,16 @@ export class SemanticAnalyzer {
                 const expected = method.type.paramTypes.slice(1);
 
                 if (argTypes.length !== expected.length) {
-                  throw new Error(
+                  this.error(
                     `Método '${sa.fieldName}' de '${baseType.name}': ` +
                     `se esperaban ${expected.length} argumentos, ` +
                     `se recibieron ${argTypes.length}`
                   );
+                  return 's32';
                 }
                 for (let i = 0; i < argTypes.length; i++) {
                   if (!this.isAssignableType(argTypes[i], expected[i])) {
-                    throw new Error(
+                    this.error(
                       `Argumento ${i} de '${sa.fieldName}': se esperaba ` +
                       `${this.typeName(expected[i])}, se obtuvo ${this.typeName(argTypes[i])}`
                     );
@@ -1182,23 +1251,26 @@ export class SemanticAnalyzer {
                 return newCall.type;
               }
 
-              throw new Error(`Campo '${sa.fieldName}' no existe en '${baseType.name}'`);
+              this.error(`Campo '${sa.fieldName}' no existe en '${baseType.name}'`);
+              return 's32';
             }
           }
         }
 
         const calleeType = this.resolveType(this.analyzeExpression(node.callee));
         if (typeof calleeType !== 'object' || calleeType.kind !== 'function') {
-          throw new Error('call_indirect: el callee no es de tipo función');
+          this.error('call_indirect: el callee no es de tipo función');
+          return 's32';
         }
         const fnType = calleeType as FunctionType;
         const params = fnType.paramTypes.map(t => this.resolveType(t));
 
         if (node.args.length !== params.length) {
-          throw new Error(
+          this.error(
             `Llamada indirecta: se esperaban ${params.length} argumentos, ` +
             `se recibieron ${node.args.length}`
           );
+          return 's32';
         }
 
         for (let i = 0; i < node.args.length; i++) {
@@ -1208,7 +1280,7 @@ export class SemanticAnalyzer {
             (at === 'string' && (et === 's32' || et === 'u32')) ||
             (et === 'string' && (at === 's32' || at === 'u32'));
           if (!this.isAssignableType(at, et) && !bridge) {
-            throw new Error(
+            this.error(
               `Argumento ${i} de la llamada indirecta: se esperaba ` +
               `${this.typeName(et)}, se obtuvo ${this.typeName(at)}`
             );
@@ -1256,7 +1328,7 @@ export class SemanticAnalyzer {
         this.captureStack.pop();
 
         if (fnNode.returnTypes.length > 0 && !this.allPathsReturn(fnNode.body as StatementNode[])) {
-          throw new Error(
+          this.error(
             `La lambda '${name}' no retorna en todos los caminos ` +
             `(se esperaba${returnTypes.length > 1 ? 'n ' : ' '}` +
             `${returnTypes.map(t => this.typeName(t)).join(', ')})`
@@ -1310,7 +1382,8 @@ export class SemanticAnalyzer {
           const provided = new Set<string>();
           for (const field of node.fields) {
             if (provided.has(field.name)) {
-              throw new Error(`Campo '${field.name}' repetido en struct anónimo`);
+              this.error(`Campo '${field.name}' repetido en struct anónimo`);
+              continue;
             }
             provided.add(field.name);
             const t = this.resolveType(this.analyzeExpression(field.value));
@@ -1326,19 +1399,31 @@ export class SemanticAnalyzer {
         const structType = this.structTypeFromRegistry(structName);
         const providedFields = new Set<string>();
         for (const field of node.fields) {
-          if (providedFields.has(field.name)) throw new Error(`Campo '${field.name}' repetido en '${structName}'`);
+          if (providedFields.has(field.name)) {
+            this.error(`Campo '${field.name}' repetido en '${structName}'`);
+            continue;
+          }
           providedFields.add(field.name);
           const expectedField = structType.fields.find(c => c.name === field.name);
-          if (!expectedField) throw new Error(`Campo '${field.name}' no existe en '${structName}'`);
+          if (!expectedField) {
+            this.error(`Campo '${field.name}' no existe en '${structName}'`);
+            continue;
+          }
           const actualType = this.resolveType(this.analyzeExpression(field.value));
           if (!this.isAssignableType(actualType, expectedField.type)) {
             if (!(actualType === 'null' && typeof expectedField.type !== 'string')) {
-              throw new Error(`Tipo incorrecto para '${structName}.${field.name}': se esperaba ${this.typeName(expectedField.type)}, se obtuvo ${this.typeName(actualType)}`);
+              this.error(
+                `Tipo incorrecto para '${structName}.${field.name}': ` +
+                `se esperaba ${this.typeName(expectedField.type)}, ` +
+                `se obtuvo ${this.typeName(actualType)}`
+              );
             }
           }
         }
         const missing = structType.fields.filter(f => !providedFields.has(f.name)).map(f => f.name);
-        if (missing.length > 0) throw new Error(`Faltan campos en '${structName}': ${missing.join(', ')}`);
+        if (missing.length > 0) {
+          this.error(`Faltan campos en '${structName}': ${missing.join(', ')}`);
+        }
         node.type = structType;
         return structType;
       }
@@ -1348,10 +1433,12 @@ export class SemanticAnalyzer {
         const baseType = typeof expressionType === 'object' && expressionType.kind === 'pointer'
           ? this.resolveType(expressionType.targetType) : expressionType;
         if (typeof baseType !== 'object' || baseType.kind !== 'struct') {
-          throw new Error(
+          this.error(
             `No se puede acceder al campo '${node.fieldName}' en un valor ` +
             `de tipo ${this.typeName(baseType)}`
           );
+          node.type = 's32';
+          return 's32';
         }
 
         const field = baseType.fields.find(c => c.name === node.fieldName);
@@ -1368,7 +1455,9 @@ export class SemanticAnalyzer {
           }
         }
 
-        throw new Error(`Campo '${node.fieldName}' no existe en '${baseType.name}'`);
+        this.error(`Campo '${node.fieldName}' no existe en '${baseType.name}'`);
+        node.type = 's32';
+        return 's32';
       }
 
       case 'array_literal': {
@@ -1377,7 +1466,10 @@ export class SemanticAnalyzer {
         for (let i = 1; i < node.elements.length; i++) {
           const t = this.resolveType(this.analyzeExpression(node.elements[i]));
           if (!this.typesEqual(t, elemType)) {
-            throw new Error(`Array literal: elemento ${i} tiene tipo ${this.typeName(t)}, esperado ${this.typeName(elemType)}`);
+            this.error(
+              `Array literal: elemento ${i} tiene tipo ${this.typeName(t)}, ` +
+              `esperado ${this.typeName(elemType)}`
+            );
           }
         }
         node.type = { kind: 'array', elementType: elemType, length: node.elements.length };
@@ -1388,7 +1480,9 @@ export class SemanticAnalyzer {
         const baseType = this.resolveType(this.analyzeExpression(node.base));
         if (typeof baseType !== 'object' ||
             (baseType.kind !== 'array' && baseType.kind !== 'dynarray')) {
-          throw new Error('array_access sobre no-array');
+          this.error('array_access sobre no-array');
+          node.type = 's32';
+          return 's32';
         }
         this.analyzeExpression(node.index);
         node.type = baseType.elementType;
@@ -1404,11 +1498,20 @@ export class SemanticAnalyzer {
         if (root.kind === 'capture_access') {
           // OK
         } else {
-          if (root.kind !== 'variable') throw new Error(`El operando de '${increment.operator}' debe ser modificable`);
+          if (root.kind !== 'variable') {
+            this.error(`El operando de '${increment.operator}' debe ser modificable`);
+            increment.type = 's32';
+            return 's32';
+          }
           this.scopeControl.checkMutable(root.name);
         }
         if (!this.isArithmetic(operandType)) {
-          throw new Error(`El operador '${increment.operator}' requiere un tipo numérico; se obtuvo ${this.typeName(operandType)}`);
+          this.error(
+            `El operador '${increment.operator}' requiere un tipo numérico; ` +
+            `se obtuvo ${this.typeName(operandType)}`
+          );
+          increment.type = 's32';
+          return 's32';
         }
         increment.type = operandType;
         return operandType;
@@ -1555,7 +1658,8 @@ export class SemanticAnalyzer {
 
     if (leftType === 'bool' && rightType === 'bool') {
       if (['&&', '||', '==', '!='].includes(op)) return 'bool';
-      throw new Error(`Operador '${op}' no permitido entre booleanos`);
+      this.error(`Operador '${op}' no permitido entre booleanos`);
+      return 'bool';
     }
     if (typeof leftType === 'string' && typeof rightType === 'string') {
       if (['==', '!=', '<', '<=', '>', '>='].includes(op)) return 'bool';
@@ -1566,7 +1670,10 @@ export class SemanticAnalyzer {
       if (['==', '!=', '<', '<=', '>', '>='].includes(op)) return 'bool';
       return this.promoteArith(leftType, rightType);
     }
-    throw new Error(`Operación '${op}' no permitida entre ${this.typeName(leftType)} y ${this.typeName(rightType)}`);
+    this.error(
+      `Operación '${op}' no permitida entre ${this.typeName(leftType)} y ${this.typeName(rightType)}`
+    );
+    return 's32';
   }
 
   private isArithmetic(t: MathType): boolean {
@@ -1843,4 +1950,4 @@ export class SemanticAnalyzer {
     }
     return false;
   }
-} // case 'multi_decl':
+}

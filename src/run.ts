@@ -98,4 +98,11 @@ async function run() {
   wasi.start(instance);
 }
 
-run().catch(err => { console.error('Error:', err); process.exit(1); });
+run().catch((err: any) => {
+  if (err instanceof Error) {
+    console.error('Error:', err.message);
+  } else {
+    console.error('Error:', err);
+  }
+  process.exit(1);
+});
