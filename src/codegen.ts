@@ -19,7 +19,7 @@ import {
 import { eliminateDeadFunctions, eliminateDeadImports, eliminateDeadStrings } from './dce';
 
 export type CompileResult = MathType | 'void';
-//  public compileFunction(fn: FunctionDefNode): void {
+
 const HEAP_PAGES = 16;
 const PAGE_SIZE  = 65536;
 const LOG2_PAGE_SIZE = 16;
@@ -90,8 +90,6 @@ export function handleImplicitConversion(
   if ((from === 'string' && (to === 's32' || to === 'u32')) ||
       (to === 'string' && (from === 's32' || from === 'u32'))) return;
 
-  // null → {pointer, struct, dynarray, function} es asignación válida:
-  // el codegen ya emite i32.const -1 para `null` y el destino ya espera un i32.
   if (from === 'null' && typeof to === 'object' &&
       (to.kind === 'pointer' || to.kind === 'struct' ||
        to.kind === 'dynarray' || to.kind === 'function')) return;
@@ -227,17 +225,17 @@ export class ExpressionCompiler {
 
       case 'function_ref': {
         const r = node as FunctionRefNode;
-        this.b.globalGet(`__funcenv_${r.name}`);
+        this.b.envAddrByName(r.name);
         return r.type;
       }
 
       case 'closure': {
         const c = node as ClosureNode;
         if (c.captures.length === 0 && this.zeroCaptureClosures.has(c.codeName)) {
-          this.b.globalGet(`__closure_env_${c.codeName}`);
+          this.b.envAddrByName(c.codeName);
           return c.type;
         }
-        const envSize = 8 * (1 + c.captures.length);
+        const envSize = 4 * (1 + c.captures.length);
         this.b.i32Const(envSize);
         this.b.callByName(RT_ALLOC);
         const base = this.fresh('closure', 'i32');
@@ -254,7 +252,7 @@ export class ExpressionCompiler {
           if (cap.boxed) {
             this.b.getLocal(base);
             this.compileValue(expr);
-            this.b.i32Store(8 + 8 * i);
+            this.b.i32Store(4 + 4 * i);
             continue;
           }
 
@@ -272,7 +270,7 @@ export class ExpressionCompiler {
 
           this.b.getLocal(base);
           this.b.getLocal(box);
-          this.b.i32Store(8 + 8 * i);
+          this.b.i32Store(4 + 4 * i);
         }
 
         this.b.getLocal(base);
@@ -282,7 +280,7 @@ export class ExpressionCompiler {
       case 'capture_access': {
         const ca = node as CaptureAccessNode;
         this.b.getLocal('__env');
-        this.b.i32Load(8 + 8 * ca.captureIndex);
+        this.b.i32Load(4 + 4 * ca.captureIndex);
         emitLoadForType(this.b, ca.type, 0);
         return ca.type;
       }
@@ -978,16 +976,16 @@ export class ExpressionCompiler {
 
     if (target.kind === 'capture_access') {
       this.b.getLocal('__env');
-      this.b.i32Load(8 + 8 * target.captureIndex);
+      this.b.i32Load(4 + 4 * target.captureIndex);
       this.b.setLocal(address);
       return address;
     }
-// case 'multi_decl': {
+
     if (target.kind === 'struct_access') {
       const baseValueType = target.base.type as MathType;
       const baseType = target.resolvedBaseType ?? getStructType(baseValueType);
       if (!baseType) throw new Error('El incremento requiere un campo de struct');
-      const field = baseType.fields.find((c: any) => c.name === target.fieldName);
+      const field = baseType.fields.find(c => c.name === target.fieldName);
       if (!field) throw new Error(`Campo '${target.fieldName}' no existe en '${baseType.name}'`);
       this.compileValue(target.base);
       const base = this.fresh('inc_struct_base', 'i32'); this.b.setLocal(base);
@@ -1127,6 +1125,8 @@ export class CodeGenerator {
   private _regionStack: string[] = [];
   private envFunctions: Set<string> = new Set();
   private zeroCaptureClosures: Set<string> = new Set();
+  private envBaseAddr = 0;
+  private envOffsets = new Map<string, number>();
 
   constructor(stmts: StatementNode[]) {
     this.modular = new ModuleBuilder();
@@ -1145,44 +1145,12 @@ export class CodeGenerator {
     let slot = 0;
     for (const name of functionRefs) this.modular.addFunctionToTable(name, slot++);
 
-    for (const name of directRefs) {
-      this.modular.addGlobal(`__funcenv_${name}`, 'i32', true, 0);
-    }
-    for (const name of zeroCaptureClosures) {
-      this.modular.addGlobal(`__closure_env_${name}`, 'i32', true, 0);
-    }
+    // Los envs estáticos se agregan como data segment al final del constructor.
+    // (directRefs / zeroCaptureClosures ya no crean globals.)
 
     for (const s of stmts) if (s.kind === 'function_def') this.compileFunction(s as FunctionDefNode);
 
     this.startBuilder = new FunctionIRBuilder([], [], [], this.modular);
-
-    for (const name of directRefs) {
-      const globalName = `__funcenv_${name}`;
-      const tmp = `$envinit_${name}`;
-      this.startBuilder.addLocal(tmp, 'i32');
-      this.startBuilder.i32Const(8);
-      this.startBuilder.callByName(RT_ALLOC);
-      this.startBuilder.setLocal(tmp);
-      this.startBuilder.getLocal(tmp);
-      this.startBuilder.functionIndexByName(name);
-      this.startBuilder.i32Store(0);
-      this.startBuilder.getLocal(tmp);
-      this.startBuilder.globalSet(globalName);
-    }
-
-    for (const name of zeroCaptureClosures) {
-      const globalName = `__closure_env_${name}`;
-      const tmp = `$cenvinit_${name}`;
-      this.startBuilder.addLocal(tmp, 'i32');
-      this.startBuilder.i32Const(8);
-      this.startBuilder.callByName(RT_ALLOC);
-      this.startBuilder.setLocal(tmp);
-      this.startBuilder.getLocal(tmp);
-      this.startBuilder.functionIndexByName(name);
-      this.startBuilder.i32Store(0);
-      this.startBuilder.getLocal(tmp);
-      this.startBuilder.globalSet(globalName);
-    }
 
     for (const s of stmts) {
       if (s.kind === 'function_def') continue;
@@ -1193,7 +1161,36 @@ export class CodeGenerator {
     }
     this.startBuilder.finalize();
 
+    // ─── Resolver envs estáticos ────────────────────────────────────
+    // Recolectamos todos los nombres usados por `ENV_ADDR_BY_NAME` en las
+    // funciones compiladas y en _start. Los reservamos como un bloque en
+    // el data segment. La dirección se reemplaza en build().
+    const envNames = new Set<string>();
+    const scanInstrs = (instrs: any[]) => {
+      for (const i of instrs) {
+        if (i.op === 'ENV_ADDR_BY_NAME') envNames.add(i.name);
+      }
+    };
+    for (const fn of this.modular.functions) scanInstrs(fn.builder.instructions);
+    scanInstrs(this.startBuilder.instructions);
+
     this.modular.ensureStringData();
+
+    if (envNames.size > 0) {
+      const base = this.modular.getStaticDataEnd(4);
+      const data: number[] = [];
+      let cursor = 0;
+      // Orden estable: usamos el orden de inserción del Set (que es el
+      // orden en que se encontraron). Los offsets quedan deterministas.
+      for (const name of envNames) {
+        this.envOffsets.set(name, cursor);
+        data.push(0, 0, 0, 0);
+        cursor += 4;
+      }
+      this.modular.addDataSegment(base, data);
+      this.envBaseAddr = base;
+    }
+
     const staticEnd = this.modular.getStaticDataEnd(8);
 
     const heapBase = staticEnd;
@@ -1215,24 +1212,43 @@ export class CodeGenerator {
     const liveNames = eliminateDeadFunctions(this.modular);
     eliminateDeadImports(this.modular, liveNames);
     eliminateDeadStrings(this.modular);
+    this.resolveEnvAddresses();
+    this.fillEnvData();
     return this.modular.build();
+  }
+
+  private resolveEnvAddresses(): void {
+    if (this.envOffsets.size === 0) return;
+    const base = this.envBaseAddr;
+    const rewrite = (instrs: any[]) => instrs.map(instr => {
+      if (instr.op === 'ENV_ADDR_BY_NAME') {
+        const off = this.envOffsets.get(instr.name);
+        if (off === undefined) throw new Error(`Env no encontrado: ${instr.name}`);
+        return { op: 'I32_CONST', val: base + off };
+      }
+      return instr;
+    });
+    for (const fn of this.modular.functions) {
+      fn.builder.instructions = rewrite(fn.builder.instructions);
+    }
+  }
+
+  private fillEnvData(): void {
+    if (this.envOffsets.size === 0) return;
+    const seg = this.modular.dataSegments.find(s => s.offset === this.envBaseAddr);
+    if (!seg) throw new Error('Env segment no encontrado');
+    for (const [name, off] of this.envOffsets) {
+      const idx = this.modular.functionTableIndices.get(name);
+      if (idx === undefined) throw new Error(`Función sin índice de tabla: ${name}`);
+      seg.data[off]     = idx & 0xFF;
+      seg.data[off + 1] = (idx >> 8) & 0xFF;
+      seg.data[off + 2] = (idx >> 16) & 0xFF;
+      seg.data[off + 3] = (idx >> 24) & 0xFF;
+    }
   }
 
   public toWat(): string { return this.modular.toWat(); }
 
-   /**
-   * Recorre el AST desde los top-level statements y devuelve:
-   *   - all:        functions y lambdas alcanzables (para envFunctions)
-   *   - direct:     nombres que aparecen como `function_ref` (necesitan __funcenv_*)
-   *   - zeroCapture: closures sin capturas alcanzables (necesitan __closure_env_*)
-   *
-   * Los `function_def` NO son roots por sí solos: sólo se visitan cuando
-   * algo los referencia (function_ref, closure o call). Esto permite que
-   * DCE elimine funciones y lambdas que nunca se invocan ni se usan como valor.
-   *
-   * Los lambdas hoisteados por el semantic ya están en `stmts` con nombre
-   * `__lambda_N`; los encontramos vía `fnByName`.
-   */
   private collectFunctionRefs(stmts: StatementNode[]): {
     all: Set<string>;
     direct: Set<string>;
@@ -1265,7 +1281,6 @@ export class CodeGenerator {
 
       if (node.kind === 'function_def') return;
 
-      // Función usada como valor → necesita __env y __funcenv_*.
       if (node.kind === 'function_ref' && typeof node.name === 'string') {
         all.add(node.name);
         direct.add(node.name);
@@ -1273,18 +1288,14 @@ export class CodeGenerator {
         return;
       }
 
-      // Closure → necesita __env. Reusa __closure_env_* sólo si no captura.
       if (node.kind === 'closure' && typeof node.codeName === 'string') {
         all.add(node.codeName);
         if (Array.isArray(node.captures) && node.captures.length === 0) {
           zeroCapture.add(node.codeName);
         }
         visitFunctionBody(node.codeName);
-        // Fall-through: captureExprs puede contener más refs.
       }
 
-      // Llamada directa: sólo seguimos el cuerpo para encontrar refs anidadas.
-      // NO la agregamos a `all` (ver explicación arriba).
       if (node.kind === 'call' && typeof node.name === 'string') {
         visitFunctionBody(node.name);
       }
@@ -1300,7 +1311,6 @@ export class CodeGenerator {
       }
     };
 
-    // Roots: sólo top-level statements (no declaraciones).
     for (const s of stmts) {
       if (s.kind === 'function_def') continue;
       if (s.kind === 'struct_def') continue;
@@ -1566,6 +1576,34 @@ export class CodeGenerator {
         break;
       }
 
+      case 'multi_decl': {
+        const md = stmt as MultiDeclNode;
+        const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
+        if (!returnTypes || !md.uniqueNames ||
+            md.uniqueNames.length !== returnTypes.length) {
+          throw new Error('multi_decl sin resolver (semantic no rellenó uniqueNames/returnTypes)');
+        }
+
+        for (let i = 0; i < md.uniqueNames.length; i++) {
+          const un = md.uniqueNames[i];
+          if (un !== null) {
+            b.addLocal(un, semanticToWasmType(returnTypes[i]));
+          }
+        }
+
+        ec.compile(md.expr);
+
+        for (let i = md.uniqueNames.length - 1; i >= 0; i--) {
+          const un = md.uniqueNames[i];
+          if (un === null) {
+            b.drop();
+          } else {
+            b.setLocal(un);
+          }
+        }
+        break;
+      }
+
       case 'assign': this.compileAssignment(stmt as AssignNode, b, ec); break;
 
       case 'return': {
@@ -1577,38 +1615,6 @@ export class CodeGenerator {
           b.callByName(RT_RESTORE);
         }
         b.return_();
-        break;
-      }
-
-            case 'multi_decl': {
-        const md = stmt as MultiDeclNode;
-        const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
-        if (!returnTypes || !md.uniqueNames ||
-            md.uniqueNames.length !== returnTypes.length) {
-          throw new Error('multi_decl sin resolver (semantic no rellenó uniqueNames/returnTypes)');
-        }
-
-        // Reservar un local por cada nombre no-wildcard.
-        for (let i = 0; i < md.uniqueNames.length; i++) {
-          const un = md.uniqueNames[i];
-          if (un !== null) {
-            b.addLocal(un, semanticToWasmType(returnTypes[i]));
-          }
-        }
-
-        // Compilar el call. Deja N valores en la pila: [v0, v1, ..., vN-1]
-        // con v_{N-1} arriba.
-        ec.compile(md.expr);
-
-        // Pop en orden inverso: wildcards se descartan con drop.
-        for (let i = md.uniqueNames.length - 1; i >= 0; i--) {
-          const un = md.uniqueNames[i];
-          if (un === null) {
-            b.drop();
-          } else {
-            b.setLocal(un);
-          }
-        }
         break;
       }
 
@@ -1820,7 +1826,7 @@ export class CodeGenerator {
       b.addLocal(vtmp, semanticToWasmType(ca.type) as any);
       b.setLocal(vtmp);
       b.getLocal('__env');
-      b.i32Load(8 + 8 * ca.captureIndex);
+      b.i32Load(4 + 4 * ca.captureIndex);
       b.getLocal(vtmp);
       emitStoreForType(b, ca.type, 0);
       return;
@@ -1895,7 +1901,7 @@ export class CodeGenerator {
     throw new Error(`LValue no soportado: ${target.kind}`);
   }
 
-    public compileFunction(fn: FunctionDefNode): void {
+  public compileFunction(fn: FunctionDefNode): void {
     const isLambda = fn.name.startsWith('__lambda_');
     const needsEnv = isLambda || this.envFunctions.has(fn.name);
 
@@ -1945,7 +1951,7 @@ export class CodeGenerator {
       this._regionStack = prevRegionStack;
     }
   }
-// case 'return': {
+
   private emitZero(b: FunctionIRBuilder, t: MathType): void {
     if (typeof t !== 'string') {
       b.i32Const(isNullablePointerType(t) ? -1 : 0);

@@ -692,6 +692,7 @@ type IRInstruction =
     | { op: 'I64_TRUNC_SAT_F32_S' } | { op: 'I64_TRUNC_SAT_F32_U' }
     | { op: 'I64_TRUNC_SAT_F64_S' } | { op: 'I64_TRUNC_SAT_F64_U' }
     | { op: 'FUNCTION_INDEX_BY_NAME'; name: string }
+    | { op: 'ENV_ADDR_BY_NAME'; name: string }
     // ─── SIMD ────────────────────────────────────────────────────────────
     | { op: 'SIMD_NOIMM'; name: string }
     | { op: 'SIMD_MEMARG'; name: string; offset?: number; align?: number }
@@ -753,7 +754,12 @@ class FunctionIRBuilder {
         this.instructions.push({ op: 'FUNCTION_INDEX_BY_NAME', name });
         this.lastInstructionWasTerminator = false;
     }
-
+    envAddrByName(name: string): void {
+    this._checkNotFinalized();
+    this.instructions.push({ op: 'ENV_ADDR_BY_NAME', name });
+    this.lastInstructionWasTerminator = false;
+    }
+// emitirBytecode
     setParamName(index: number, name: string): void {
         if (index < 0 || index >= this.paramTypes.length) {
             throw new Error(`Índice de parámetro fuera de rango: ${index}`);
@@ -3379,6 +3385,8 @@ function emitirBytecode(ir: IRInstruction[]): number[] {
             case 'MEMORY_GROW': bytes.push(OP.MEMORY_GROW, 0x00); break;
             case 'FUNCTION_INDEX_BY_NAME':
                 throw new Error('FUNCTION_INDEX_BY_NAME debe ser resuelto antes de emitir bytecode');
+            case 'ENV_ADDR_BY_NAME':
+                throw new Error('ENV_ADDR_BY_NAME debe ser resuelto antes de emitir bytecode');
             case 'I32_CONST': bytes.push(OP.I32_CONST, ...encodeSignedLEB128(toI32(instr.val))); break;
             case 'I64_CONST': bytes.push(OP.I64_CONST, ...encodeSignedLEB128(toI64(instr.val))); break;
             case 'F32_CONST': bytes.push(OP.F32_CONST, ...floatToBytes(instr.val, 32)); break;
