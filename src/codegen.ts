@@ -26,11 +26,8 @@ const LOG2_PAGE_SIZE = 16;
 
 // ─── Layout de env de closures ──────────────────────────────────────────
 //   offset 0:          índice de tabla de la función (i32)
-//   offset 4 + 4*i:    captura i (i32; para valores pequeños es el valor
-//                      inline, para valores ≥8 bytes es un puntero al box)
-//
-// Slot de 4 bytes por captura. Antes eran 8; el cambio reduce el consumo
-// de heap a la mitad para closures con muchas capturas.
+//   offset 4 + 4*i:    captura i (i32)
+// Slot de 4 bytes por captura.
 // ────────────────────────────────────────────────────────────────────────
 
 const RT_SAVE     = 'arena_save';
@@ -234,7 +231,6 @@ export class ExpressionCompiler {
 
       case 'function_ref': {
         const r = node as FunctionRefNode;
-        // Env estático: la dirección se resuelve en build() a un i32.const.
         this.b.envAddrByName(r.name);
         return r.type;
       }
@@ -242,12 +238,10 @@ export class ExpressionCompiler {
       case 'closure': {
         const c = node as ClosureNode;
         if (c.captures.length === 0 && this.zeroCaptureClosures.has(c.codeName)) {
-          // Env estático compartido.
           this.b.envAddrByName(c.codeName);
           return c.type;
         }
-        // Env dinámico: 4 bytes para el code_idx + 4 bytes por captura.
-        const envSize = 4 * (1 + c.captures.length);   // ← 4 (era 8)
+        const envSize = 4 * (1 + c.captures.length);
         this.b.i32Const(envSize);
         this.b.callByName(RT_ALLOC);
         const base = this.fresh('closure', 'i32');
@@ -264,7 +258,7 @@ export class ExpressionCompiler {
           if (cap.boxed) {
             this.b.getLocal(base);
             this.compileValue(expr);
-            this.b.i32Store(4 + 4 * i);                 // ← 4 (era 8)
+            this.b.i32Store(4 + 4 * i);
             continue;
           }
 
@@ -282,7 +276,7 @@ export class ExpressionCompiler {
 
           this.b.getLocal(base);
           this.b.getLocal(box);
-          this.b.i32Store(4 + 4 * i);                   // ← 4 (era 8)
+          this.b.i32Store(4 + 4 * i);
         }
 
         this.b.getLocal(base);
@@ -292,7 +286,7 @@ export class ExpressionCompiler {
       case 'capture_access': {
         const ca = node as CaptureAccessNode;
         this.b.getLocal('__env');
-        this.b.i32Load(4 + 4 * ca.captureIndex);        // ← 4 (era 8)
+        this.b.i32Load(4 + 4 * ca.captureIndex);
         emitLoadForType(this.b, ca.type, 0);
         return ca.type;
       }
@@ -988,7 +982,7 @@ export class ExpressionCompiler {
 
     if (target.kind === 'capture_access') {
       this.b.getLocal('__env');
-      this.b.i32Load(4 + 4 * target.captureIndex);    // ← 4 (era 8)
+      this.b.i32Load(4 + 4 * target.captureIndex);
       this.b.setLocal(address);
       return address;
     }
@@ -997,7 +991,7 @@ export class ExpressionCompiler {
       const baseValueType = target.base.type as MathType;
       const baseType = target.resolvedBaseType ?? getStructType(baseValueType);
       if (!baseType) throw new Error('El incremento requiere un campo de struct');
-      const field = baseType.fields.find((c: any)=> c.name === target.fieldName);
+      const field = baseType.fields.find(c => c.name === target.fieldName);
       if (!field) throw new Error(`Campo '${target.fieldName}' no existe en '${baseType.name}'`);
       this.compileValue(target.base);
       const base = this.fresh('inc_struct_base', 'i32'); this.b.setLocal(base);
@@ -1157,9 +1151,6 @@ export class CodeGenerator {
     let slot = 0;
     for (const name of functionRefs) this.modular.addFunctionToTable(name, slot++);
 
-    // Envs estáticos: ya no creamos globals __funcenv_* ni __closure_env_*.
-    // La dirección de cada env se resuelve en build() y vive en data segment.
-
     for (const s of stmts) if (s.kind === 'function_def') this.compileFunction(s as FunctionDefNode);
 
     this.startBuilder = new FunctionIRBuilder([], [], [], this.modular);
@@ -1173,10 +1164,6 @@ export class CodeGenerator {
     }
     this.startBuilder.finalize();
 
-    // ─── Envs estáticos ─────────────────────────────────────────────
-    // Recolectamos cada `ENV_ADDR_BY_NAME` emitido. Reservamos un bloque
-    // contiguo en el data segment y guardamos los offsets. Los
-    // reemplazamos por i32.const en build().
     const envNames = new Set<string>();
     const scanInstrs = (instrs: any[]) => {
       for (const i of instrs) {
@@ -1685,10 +1672,12 @@ export class CodeGenerator {
             (iterableType.kind !== 'array' && iterableType.kind !== 'dynarray')) {
           throw new Error('for_in sobre no-array');
         }
+
         const arrTemp = `$forin_arr_${this.ctr++}`;
         b.addLocal(arrTemp, 'i32');
         ec.compile(fi.iterable);
         b.setLocal(arrTemp);
+
         const lenTemp = `$forin_len_${this.ctr++}`;
         b.addLocal(lenTemp, 'i32');
         if (iterableType.kind === 'dynarray') {
@@ -1696,28 +1685,46 @@ export class CodeGenerator {
         } else {
           b.i32Const(iterableType.length); b.setLocal(lenTemp);
         }
+
         const idxTemp = `$forin_idx_${this.ctr++}`;
         b.addLocal(idxTemp, 'i32');
         b.i32Const(0); b.setLocal(idxTemp);
-        const varUnique = (fi as any).uniqueName ?? `$forin_var_${this.ctr++}`;
+
+        const indexUnique = (fi as any).indexUnique as string | null | undefined;
+        const valueUnique = (fi as any).valueUnique as string | null | undefined;
         const elemType = iterableType.elementType;
-        b.addLocal(varUnique, semanticToWasmType(elemType) as any);
+
+        if (indexUnique != null) b.addLocal(indexUnique, 'i32');
+        if (valueUnique != null) b.addLocal(valueUnique, semanticToWasmType(elemType) as any);
+
         const exitLabel = `$forin_exit_${this.ctr}`;
         const topLabel = `$forin_top_${this.ctr}`;
         const contLabel = `$forin_cont_${this.ctr}`;
         this.ctr++;
+
         b.block('void', exitLabel);
         b.loop('void', topLabel);
+
         b.getLocal(idxTemp); b.getLocal(lenTemp); b.i32GeS(); b.brIfTo(exitLabel);
-        const es = sizeOfType(elemType);
-        b.getLocal(arrTemp); b.getLocal(idxTemp); b.i32Const(es); b.i32Mul(); b.i32Add();
-        if (isInlineValue(elemType)) b.setLocal(varUnique);
-        else { emitLoadForType(b, elemType); b.setLocal(varUnique); }
+
+        if (indexUnique != null) {
+          b.getLocal(idxTemp);
+          b.setLocal(indexUnique);
+        }
+
+        if (valueUnique != null) {
+          const es = sizeOfType(elemType);
+          b.getLocal(arrTemp); b.getLocal(idxTemp); b.i32Const(es); b.i32Mul(); b.i32Add();
+          if (isInlineValue(elemType)) b.setLocal(valueUnique);
+          else { emitLoadForType(b, elemType); b.setLocal(valueUnique); }
+        }
+
         b.block('void', contLabel);
         this._labelStack.push({ breakLabel: exitLabel, continueLabel: contLabel });
         for (const s of fi.body) this.compileStatement(s, b);
         this._labelStack.pop();
         b.end();
+
         b.getLocal(idxTemp); b.i32Const(1); b.i32Add(); b.setLocal(idxTemp);
         b.brTo(topLabel);
         b.end(); b.end();
@@ -1836,7 +1843,7 @@ export class CodeGenerator {
       b.addLocal(vtmp, semanticToWasmType(ca.type) as any);
       b.setLocal(vtmp);
       b.getLocal('__env');
-      b.i32Load(4 + 4 * ca.captureIndex);              // ← 4 (era 8)
+      b.i32Load(4 + 4 * ca.captureIndex);
       b.getLocal(vtmp);
       emitStoreForType(b, ca.type, 0);
       return;

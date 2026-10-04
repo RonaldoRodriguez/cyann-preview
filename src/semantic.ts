@@ -353,7 +353,9 @@ export class SemanticAnalyzer {
         case 'for_in':
           visitExpr(stmt.iterable);
           pushScope();
-          declare(stmt.varName);
+          for (const n of stmt.varNames) {
+            if (n !== '_') declare(n);
+          }
           for (const s of stmt.body) visitStmt(s);
           popScope();
           return;
@@ -681,11 +683,40 @@ export class SemanticAnalyzer {
           this.error(`for ... in: se esperaba un array, se obtuvo ${this.typeName(iterableType)}`);
           break;
         }
+
+        const names = stmt.varNames;
+        if (names.length < 1 || names.length > 2) {
+          this.error(`for ... in: se esperan 1 o 2 variables, se recibieron ${names.length}`);
+          break;
+        }
+
+        let indexName: string | null = null;
+        let valueName: string;
+        if (names.length === 1) {
+          valueName = names[0];
+        } else {
+          indexName = names[0];
+          valueName = names[1];
+        }
+
         this.scopeControl.pushScope();
-        const uniqueName = this.scopeControl.declare(stmt.varName, iterableType.elementType, true, false);
-        (stmt as any).uniqueName = uniqueName;
+
+        let indexUnique: string | null = null;
+        if (indexName !== null && indexName !== '_') {
+          indexUnique = this.scopeControl.declare(indexName, 's32', true, false);
+          this.slotLevels.set(indexUnique, this.currentLevel);
+        }
+
+        let valueUnique: string | null = null;
+        if (valueName !== '_') {
+          valueUnique = this.scopeControl.declare(valueName, iterableType.elementType, true, false);
+          this.slotLevels.set(valueUnique, this.currentLevel);
+        }
+
+        (stmt as any).indexUnique = indexUnique;
+        (stmt as any).valueUnique = valueUnique;
         (stmt as any).elementType = iterableType.elementType;
-        this.slotLevels.set(uniqueName, this.currentLevel);
+
         for (const s of stmt.body) this.analyzeStatement(s);
         this.scopeControl.popScope();
         break;

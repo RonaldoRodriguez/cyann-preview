@@ -70,10 +70,11 @@ export interface ForNode {
 
 export interface ForInNode {
   kind: 'for_in';
-  varName: string;
+  varNames: string[];
   iterable: MathNode;
   body: StatementNode[];
-  uniqueName?: string;
+  indexUnique?: string | null;
+  valueUnique?: string | null;
   elementType?: MathType;
 }
 
@@ -215,8 +216,7 @@ export class Parser {
   }
 
   private parseStatementStartingWithIdentifier(name: string): StatementNode {
-    // Multi-decl: `a, b = expr` (requiere que a, b ya existan, pero el
-    // semantic lo valida; el parser sólo construye el nodo).
+    // Multi-decl: `a, b = expr`
     if (this.matchToken('SYMBOL', ',')) {
       const names = [name];
       do {
@@ -285,7 +285,6 @@ export class Parser {
     this.expectToken('KEYWORD', 'var');
     const firstName = this.expectToken('IDENTIFIER');
 
-    // Multi-decl: `var a, b, c = expr`
     if (this.matchToken('SYMBOL', ',')) {
       const names = [firstName];
       do {
@@ -298,7 +297,6 @@ export class Parser {
       return { kind: 'multi_decl', names, expr };
     }
 
-    // Single-decl normal.
     const inferred = this.currentToken.value === '=';
     let type: MathType = 's32';
     if (!inferred) type = this.parseGoTypeName();
@@ -429,17 +427,31 @@ export class Parser {
     }
 
     if (this.check('IDENTIFIER')) {
-      const varName = this.currentToken.value;
+      const firstName = this.currentToken.value;
       this.advance();
 
+      // `for i, x in xs` o `for _, x in xs`
+      if (this.matchToken('SYMBOL', ',')) {
+        const names = [firstName];
+        do {
+          names.push(this.expectToken('IDENTIFIER'));
+        } while (this.matchToken('SYMBOL', ','));
+
+        this.expectToken('KEYWORD', 'in');
+        const iterable = this.withoutStructLiteral(() => this.parseExpression());
+        const body = this.parseLoopBody();
+        return { kind: 'for_in', varNames: names, iterable, body };
+      }
+
+      // `for x in xs`
       if (this.matchToken('KEYWORD', 'in')) {
         const iterable = this.withoutStructLiteral(() => this.parseExpression());
         const body = this.parseLoopBody();
-        return { kind: 'for_in', varName, iterable, body };
+        return { kind: 'for_in', varNames: [firstName], iterable, body };
       }
 
       const firstStmt = this.withoutStructLiteral(
-        () => this.parseStatementStartingWithIdentifier(varName)
+        () => this.parseStatementStartingWithIdentifier(firstName)
       );
       return this.finishClassicFor(firstStmt);
     }

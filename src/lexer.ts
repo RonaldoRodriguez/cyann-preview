@@ -80,7 +80,11 @@ export class Lexer {
     }
 
     // Números
-    if (/\d/.test(ch) || ((ch === '+' || ch === '-') && /\d/.test(this.source[this.index + 1] || ''))) {
+        // Números
+    // Nota: NO aceptamos `+N` o `-N` como literal con signo. La regla
+    // anterior rompía expresiones sin espacios como `x+1` o `(0+1)`.
+    // El parser maneja el `-` unario y el optimizador pliega constantes.
+    if (/\d/.test(ch)) {
       let raw = this.nextChar();
       while (!this.isEOF() && /[0-9a-fA-F._xXbBuUlLfL]/.test(this.peekChar())) raw += this.nextChar();
       return { type: 'NUMBER', value: raw, line: startLine, column: startColumn };
