@@ -1127,7 +1127,7 @@ export class CodeGenerator {
   private modular: ModuleBuilder;
   private startBuilder: FunctionIRBuilder;
   private ctr = 0;
-  private _labelStack: { breakLabel: string; continueLabel: string | null }[] = [];
+  private _labelStack: { breakLabel: string; continueLabel: string | null; name: string | null }[] = [];
   private _regionStack: string[] = [];
   private envFunctions: Set<string> = new Set();
   private zeroCaptureClosures: Set<string> = new Set();
@@ -1655,7 +1655,7 @@ export class CodeGenerator {
           b.brIfTo(exitLabel);
         }
         b.block('void', contLabel);
-        this._labelStack.push({ breakLabel: exitLabel, continueLabel: contLabel });
+        this._labelStack.push({ breakLabel: exitLabel, continueLabel: contLabel, name: f.label ?? null });
         for (const s of f.body) this.compileStatement(s, b);
         this._labelStack.pop();
         b.end();
@@ -1720,7 +1720,7 @@ export class CodeGenerator {
         }
 
         b.block('void', contLabel);
-        this._labelStack.push({ breakLabel: exitLabel, continueLabel: contLabel });
+        this._labelStack.push({ breakLabel: exitLabel, continueLabel: contLabel, name: fi.label ?? null });
         for (const s of fi.body) this.compileStatement(s, b);
         this._labelStack.pop();
         b.end();
@@ -1789,21 +1789,43 @@ export class CodeGenerator {
       }
 
       case 'break': {
-        const _ = stmt as BreakNode;
-        const ctx = this._labelStack[this._labelStack.length - 1];
-        if (!ctx) throw new Error('break fuera de bucle');
+        const bk = stmt as BreakNode;
+        const name = bk.label ?? null;
+        let ctx: { breakLabel: string; continueLabel: string | null; name: string | null } | null = null;
+
+        if (name !== null) {
+          for (let i = this._labelStack.length - 1; i >= 0; i--) {
+            if (this._labelStack[i].name === name) { ctx = this._labelStack[i]; break; }
+          }
+          if (!ctx) throw new Error(`break: etiqueta '${name}' no encontrada`);
+        } else {
+          ctx = this._labelStack[this._labelStack.length - 1] ?? null;
+          if (!ctx) throw new Error('break fuera de bucle');
+        }
+
         b.brTo(ctx.breakLabel);
         break;
       }
 
       case 'continue': {
-        const _ = stmt as ContinueNode;
-        let done = false;
-        for (let i = this._labelStack.length - 1; i >= 0; i--) {
-          const ctx = this._labelStack[i];
-          if (ctx.continueLabel) { b.brTo(ctx.continueLabel); done = true; break; }
+        const ct = stmt as ContinueNode;
+        const name = ct.label ?? null;
+        let ctx: { breakLabel: string; continueLabel: string | null; name: string | null } | null = null;
+
+        if (name !== null) {
+          for (let i = this._labelStack.length - 1; i >= 0; i--) {
+            const e = this._labelStack[i];
+            if (e.name === name && e.continueLabel) { ctx = e; break; }
+          }
+          if (!ctx) throw new Error(`continue: etiqueta '${name}' no encontrada`);
+        } else {
+          for (let i = this._labelStack.length - 1; i >= 0; i--) {
+            if (this._labelStack[i].continueLabel) { ctx = this._labelStack[i]; break; }
+          }
+          if (!ctx) throw new Error('continue fuera de bucle');
         }
-        if (!done) throw new Error('continue fuera de bucle');
+
+        b.brTo(ctx.continueLabel!);
         break;
       }
 

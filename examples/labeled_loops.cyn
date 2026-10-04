@@ -1,0 +1,150 @@
+// labeled_loops.cyn — break y continue etiquetados.
+
+@include("lib/std.cyn")
+@include("lib/std_v2.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func section(t string) { println(""); print("═══ "); println(t) }
+func check(got int, want int, l string) {
+    if got == want { g_pass = g_pass + 1; print("  ok   "); println(l) }
+    else { g_fail = g_fail + 1; print("  FAIL "); println(l); print(" got="); print_int(got); print(" want="); println_int(want) }
+}
+
+// ─── 1. break outer ──────────────────────────────────────────────
+
+func find_pair_sum(xs []int, ys []int, target int) (int, int) {
+    var found_i int = -1
+    var found_j int = -1
+    outer: for i, x in xs {
+        for j, y in ys {
+            if x + y == target {
+                found_i = i
+                found_j = j
+                break outer
+            }
+        }
+    }
+    return found_i, found_j
+}
+
+// ─── 2. continue outer ───────────────────────────────────────────
+
+func count_before_diag() int {
+    var count int = 0
+    var xs []int = [0, 1, 2, 3]
+    var ys []int = [0, 1, 2, 3]
+    outer: for i, _ in xs {
+        for j, _ in ys {
+            if i == j { continue outer }
+            count = count + 1
+        }
+    }
+    return count
+}
+
+// ─── 3. break sin etiqueta (comportamiento viejo) ────────────────
+
+func count_until_neg(xs []int) int {
+    var c int = 0
+    for x in xs {
+        if x < 0 { break }
+        c = c + 1
+    }
+    return c
+}
+
+// ─── 4. Nested sin etiqueta: break sale del inner ────────────────
+
+func nested_no_label() int {
+    var count int = 0
+    var i int = 0
+    for i < 3 {
+        var j int = 0
+        for j < 3 {
+            if j == 1 { break }
+            count = count + 1
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+// ─── 5. for clásico etiquetado ───────────────────────────────────
+
+func classic_labeled() int {
+    var sum int = 0
+    var i int = 0
+    outer: for i < 5 {
+        var j int = 0
+        for j < 5 {
+            if i * j > 6 { break outer }
+            sum = sum + i * j
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return sum
+}
+
+func classic_with_var() int {
+    var sum int = 0
+    outer: for var i = 0; i < 5; i++ {
+        for var j = 0; j < 5; j++ {
+            if i * j > 6 { break outer }
+            sum = sum + i * j
+        }
+    }
+    return sum
+}
+
+// ─── Main ────────────────────────────────────────────────────────
+
+func main() {
+    println("cyann — LOOPS ETIQUETADOS")
+    println("══════════════════════════════════════════════")
+
+    section("1. break outer")
+    var xs []int = [1, 2, 3, 4]
+    var ys []int = [5, 6, 7, 8]
+    var i1, j1 = find_pair_sum(xs, ys, 7)
+    check(i1, 0, "target=7 → i=0")
+    check(j1, 1, "target=7 → j=1")
+
+    var i2, j2 = find_pair_sum(xs, ys, 12)
+    check(i2, 3, "target=12 → i=3")
+    check(j2, 3, "target=12 → j=3")
+
+    var i3, j3 = find_pair_sum(xs, ys, 999)
+    check(i3, -1, "target=999 → i=-1")
+    check(j3, -1, "target=999 → j=-1")
+
+    section("2. continue outer")
+    check(count_before_diag(), 6, "6 pares antes de la diagonal")
+
+    section("3. break sin etiqueta")
+    var ns []int = [1, 2, 3, -5, 4, 5]
+    check(count_until_neg(ns), 3, "3 positivos antes del negativo")
+
+    section("4. Nested sin etiqueta")
+    check(nested_no_label(), 3, "3 iteraciones")
+
+    section("5. for clásico etiquetado")
+    check(classic_labeled(), 22, "suma antes de i*j > 6")
+
+    section("6. var en init del for")
+    check(classic_with_var(), 22, "suma antes de i*j > 6 (var en init)")
+
+    println("")
+    println("══════════════════════════════════════════════")
+    print("Pasan: ");  println_int(g_pass)
+    print("Fallan: "); println_int(g_fail)
+    print("Total: ");  println_int(g_pass + g_fail)
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); exit(1) }
+}
+
+main()

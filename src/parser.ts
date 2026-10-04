@@ -62,6 +62,7 @@ export interface IfNode {
 
 export interface ForNode {
   kind: 'for';
+  label?: string;
   init?: StatementNode | null;
   condition?: MathNode | null;
   post?: StatementNode | null;
@@ -70,6 +71,7 @@ export interface ForNode {
 
 export interface ForInNode {
   kind: 'for_in';
+  label?: string;
   varNames: string[];
   iterable: MathNode;
   body: StatementNode[];
@@ -92,8 +94,8 @@ export interface SwitchNode {
 }
 
 export interface RegionNode { kind: 'region'; body: StatementNode[]; }
-export interface BreakNode    { kind: 'break'; }
-export interface ContinueNode { kind: 'continue'; }
+export interface BreakNode    { kind: 'break'; label?: string; }
+export interface ContinueNode { kind: 'continue'; label?: string; }
 export interface ReturnNode   { kind: 'return'; values: MathNode[]; }
 export interface ExpressionStmtNode { kind: 'expression_stmt'; expr: MathNode; }
 
@@ -118,7 +120,7 @@ export class Parser {
   private lexer: Lexer;
   private currentToken!: Token;
   private _noStructLiteral = 0;
-  private _loopStack: { supportsContinue: boolean }[] = [];
+  private _loopStack: { supportsContinue: boolean; label?: string }[] = [];
 
   constructor(lexer: Lexer) { this.lexer = lexer; this.advance(); }
 
@@ -163,8 +165,8 @@ export class Parser {
     try { return fn(); } finally { this._noStructLiteral--; }
   }
 
-  private parseLoopBody(): StatementNode[] {
-    this._loopStack.push({ supportsContinue: true });
+  private parseLoopBody(label?: string): StatementNode[] {
+    this._loopStack.push({ supportsContinue: true, label });
     try { return this.parseBlock(); } finally { this._loopStack.pop(); }
   }
 
@@ -207,6 +209,16 @@ export class Parser {
     if (this.currentToken.type === 'IDENTIFIER') {
       const name = this.currentToken.value;
       this.advance();
+
+      // ¿Etiqueta de loop? `nombre: for ...`
+      if (this.currentToken.value === ':') {
+        const next = this.peekNextToken();
+        if (next.type === 'KEYWORD' && next.value === 'for') {
+          this.advance(); // consume ':'
+          return this.parseForStatement(name);
+        }
+      }
+
       return this.parseStatementStartingWithIdentifier(name);
     }
 
@@ -216,7 +228,6 @@ export class Parser {
   }
 
   private parseStatementStartingWithIdentifier(name: string): StatementNode {
-    // Multi-decl: `a, b = expr`
     if (this.matchToken('SYMBOL', ',')) {
       const names = [name];
       do {
@@ -418,13 +429,20 @@ export class Parser {
     return { kind: 'if', condition, thenBlock, elseBlock };
   }
 
-  private parseForStatement(): StatementNode {
+ private parseForStatement(label: string | null = null): StatementNode {
     this.expectToken('KEYWORD', 'for');
 
     if (this.checkValue('{')) {
-      const body = this.parseLoopBody();
-      return { kind: 'for', body };
+      const body = this.parseLoopBody(label ?? undefined);
+      return { kind: 'for', label: label ?? undefined, body };
     }
+
+    // ─── NUEVO: `for var i = 0; ...` ─────────────────────────────
+    if (this.check('KEYWORD', 'var')) {
+      const initStmt = this.parseVarDecl();
+      return this.finishClassicFor(initStmt, label);
+    }
+    // ─────────────────────────────────────────────────────────────
 
     if (this.check('IDENTIFIER')) {
       const firstName = this.currentToken.value;
@@ -439,34 +457,34 @@ export class Parser {
 
         this.expectToken('KEYWORD', 'in');
         const iterable = this.withoutStructLiteral(() => this.parseExpression());
-        const body = this.parseLoopBody();
-        return { kind: 'for_in', varNames: names, iterable, body };
+        const body = this.parseLoopBody(label ?? undefined);
+        return { kind: 'for_in', label: label ?? undefined, varNames: names, iterable, body };
       }
 
       // `for x in xs`
       if (this.matchToken('KEYWORD', 'in')) {
         const iterable = this.withoutStructLiteral(() => this.parseExpression());
-        const body = this.parseLoopBody();
-        return { kind: 'for_in', varNames: [firstName], iterable, body };
+        const body = this.parseLoopBody(label ?? undefined);
+        return { kind: 'for_in', label: label ?? undefined, varNames: [firstName], iterable, body };
       }
 
       const firstStmt = this.withoutStructLiteral(
         () => this.parseStatementStartingWithIdentifier(firstName)
       );
-      return this.finishClassicFor(firstStmt);
+      return this.finishClassicFor(firstStmt, label);
     }
 
-    if (this.checkValue(';')) return this.finishClassicFor(null);
+    if (this.checkValue(';')) return this.finishClassicFor(null, label);
 
     const condExpr = this.withoutStructLiteral(() => this.parseExpression());
     if (this.checkValue('{')) {
-      const body = this.parseLoopBody();
-      return { kind: 'for', condition: condExpr, body };
+      const body = this.parseLoopBody(label ?? undefined);
+      return { kind: 'for', label: label ?? undefined, condition: condExpr, body };
     }
     this.error('for: se esperaba "{" después de la condición');
   }
 
-  private finishClassicFor(firstStmt: StatementNode | null): ForNode {
+  private finishClassicFor(firstStmt: StatementNode | null, label: string | null = null): ForNode {
     let init: StatementNode | null = null;
     let condition: MathNode | null = null;
     let post: StatementNode | null = null;
@@ -486,8 +504,8 @@ export class Parser {
       if (!this.checkValue('{')) post = this.parseStatement();
     }
 
-    const body = this.parseLoopBody();
-    return { kind: 'for', init, condition, post, body };
+    const body = this.parseLoopBody(label ?? undefined);
+    return { kind: 'for', label: label ?? undefined, init, condition, post, body };
   }
 
   private parseSwitchStatement(): SwitchNode {
@@ -594,16 +612,38 @@ export class Parser {
 
   private parseBreakStatement(): BreakNode {
     this.expectToken('KEYWORD', 'break');
-    if (this._loopStack.length === 0) this.error('break fuera de un bucle');
+    let label: string | undefined = undefined;
+    if (this.currentToken.type === 'IDENTIFIER') {
+      label = this.currentToken.value;
+      this.advance();
+    }
+    if (label !== undefined) {
+      if (!this._loopStack.some(l => l.label === label)) {
+        this.error(`break: etiqueta '${label}' no encontrada`);
+      }
+    } else {
+      if (this._loopStack.length === 0) this.error('break fuera de un bucle');
+    }
     this.matchToken('SYMBOL', ';');
-    return { kind: 'break' };
+    return { kind: 'break', label };
   }
 
   private parseContinueStatement(): ContinueNode {
     this.expectToken('KEYWORD', 'continue');
-    if (!this._loopStack.some(l => l.supportsContinue)) this.error('continue fuera de un bucle');
+    let label: string | undefined = undefined;
+    if (this.currentToken.type === 'IDENTIFIER') {
+      label = this.currentToken.value;
+      this.advance();
+    }
+    if (label !== undefined) {
+      if (!this._loopStack.some(l => l.label === label && l.supportsContinue)) {
+        this.error(`continue: etiqueta '${label}' no encontrada`);
+      }
+    } else {
+      if (!this._loopStack.some(l => l.supportsContinue)) this.error('continue fuera de un bucle');
+    }
     this.matchToken('SYMBOL', ';');
-    return { kind: 'continue' };
+    return { kind: 'continue', label };
   }
 
   private parseReturnStatement(): ReturnNode {
@@ -1080,3 +1120,5 @@ export class Parser {
     return expr;
   }
 }
+
+// private parseForStatement(label: string | null = null): StatementNode {
