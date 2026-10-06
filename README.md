@@ -200,7 +200,8 @@ La ventaja del método es la ergonomía: `p.greet()` se lee mejor que `greet(p)`
 
 El archivo `examples/methods.cyn` cubre todos los casos: métodos básicos, métodos que mutan, métodos con argumentos y retorno, métodos sobre literales, method values con estado compartido, y llamadas por nombre de struct. Corrélo con:
 ```bash
-    bun src/run.ts examples/methods.cyn
+    bun src/run.ts examples/methods.cyn demos/methods.wasm   
+    wasmtime demos/methods.wasm
 ```
 
 para ver los 8 checks de la suite de métodos.
