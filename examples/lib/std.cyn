@@ -45,10 +45,18 @@ func print(s string) {
     _write(1, s, str_len(s))
 }
 
+func print(s int) {
+    print_int(value)
+}
+
 func println(s string) {
     print(s)
     print("\n")
 }
+func println(value int) {
+    print_int(value)
+}
+
 
 func eprint(s string) {
     _write(2, s, str_len(s))
