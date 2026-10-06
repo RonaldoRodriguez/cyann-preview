@@ -46,7 +46,7 @@ func print(s string) {
 }
 
 func print(s int) {
-    print_int(value)
+    print_int(s)
 }
 
 func println(s string) {
@@ -54,7 +54,7 @@ func println(s string) {
     print("\n")
 }
 func println(value int) {
-    println_int(value)
+    print_int(value)
 }
 
 
