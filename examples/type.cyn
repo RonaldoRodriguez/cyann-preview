@@ -1,0 +1,53 @@
+[import("wasi_snapshot_preview1", "fd_write")]
+func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
+
+
+type Person struct {
+    ptr int
+    len int
+}
+func _write(fd int, ptr int, len int, _nwrite int) {
+    const _iovec Person = Person{ptr: ptr, len: len}
+    _wasi_fd_write(fd, (_iovec as int), 1, _nwrite)
+}
+
+func print_char(c int) {
+    var _nwrite = arena_alloc(4)
+    mem_write8(_nwrite, c)
+    _write(1, _nwrite, 1, _nwrite)
+}
+
+func print_int(n int) {
+    if n == 0 {
+        print_char(48)   // '0'
+        return
+    }
+    if n < 0 {
+        print_char(45)   // '-'
+        n = -n
+    }
+    region {
+        var digits [12]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        var i int = 0
+        for n > 0 {
+            digits[i] = 48 + (n % 10)
+            n = n / 10
+            i++
+        }
+        for i > 0 {
+            i--
+            print_char(digits[i])
+        }
+    }
+}
+
+func add(z []int)
+{   
+    var p = z ;
+    print_int(p[0])
+}
+
+
+var p = [72,3,4,5]
+
+add(p)
