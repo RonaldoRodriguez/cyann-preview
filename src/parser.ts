@@ -179,7 +179,10 @@ export class Parser {
   public parseStatement(): StatementNode {
     if (this.currentToken.value === '[') {
       this.advance();
+      // solo por compatibilidad host(), esperemos su decuso pronto
       if (this.matchToken('KEYWORD', 'host')) return this.parseImportDecl();
+      // fromato actual, el correcto
+      //if (this.matchToken('KEYWORD', 'import')) return this.parseImportDecl();
 
       if (this.currentToken.type === 'IDENTIFIER') {
         const receiver = this.parseGoTypeName();
@@ -187,7 +190,7 @@ export class Parser {
         return this.parseMethodDef(receiver);
       }
 
-      this.error("Solo se admite [host(...)] o [Tipo] como atributo");
+      this.error("Solo se admite [import(...)] o [Tipo] como atributo");
     }
 
     if (this.currentToken.value === 'var')    return this.parseVarDecl();
@@ -750,17 +753,22 @@ export class Parser {
       };
     } else {
       switch (typeName) {
+        // i32
         case 'int':
         case 'i32':
         case 'int32':
         case 'int32_t': type = 's32'; break;
+        // i64
+        case 'long': 
+        case 'i64':
         case 'int64':
-        case 'int64_t':
-        case 'long': type = 's64'; break;
+        case 'int64_t':type = 's64'; break;
+        // u32
         case 'uint':
         case 'u32':
         case 'uint32':
         case 'uint32_t': type = 'u32'; break;
+        // u64
         case 'uint64':
         case 'uint64_t':
         case 'u64': type = 'u64'; break;
@@ -1031,6 +1039,14 @@ export class Parser {
         this._noStructLiteral = savedNoStruct;
       }
       this.expectToken('SYMBOL', ')');
+      if(this.check('SYMBOL','.')){
+      while (this.matchToken('SYMBOL', '.')) {
+          this.expectToken('SYMBOL', '(');
+          const targetType = this.parseGoTypeName();
+          this.expectToken('SYMBOL', ')');
+          node = { kind: 'cast', operator: 'as', oldType: (node as any).type, newType: targetType, operand: node } as any;
+        }
+      }
     }
     else if (this.matchToken('IDENTIFIER')) {
       if (this.currentToken.value === '(') node = this.parseCallAfterName(token.value);
@@ -1120,5 +1136,3 @@ export class Parser {
     return expr;
   }
 }
-
-// private parseForStatement(label: string | null = null): StatementNode {
