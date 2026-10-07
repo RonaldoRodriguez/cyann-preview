@@ -1040,12 +1040,15 @@ export class Parser {
       }
       this.expectToken('SYMBOL', ')');
       if(this.check('SYMBOL','.')){
-      while (this.matchToken('SYMBOL', '.')) {
-          this.expectToken('SYMBOL', '(');
-          const targetType = this.parseGoTypeName();
-          this.expectToken('SYMBOL', ')');
-          node = { kind: 'cast', operator: 'as', oldType: (node as any).type, newType: targetType, operand: node } as any;
+        const check = this.peekNextToken()
+        if(check.type === 'SYMBOL' && check.value === '(' ){
+            this.expectToken('SYMBOL', '.');
+            this.expectToken('SYMBOL', '(');
+            const targetType = this.parseGoTypeName();
+            this.expectToken('SYMBOL', ')');
+            node = { kind: 'cast', operator: 'as', oldType: (node as any).type, newType: targetType, operand: node } as any;
         }
+        else node = this.parsePostfix(node);
       }
     }
     else if (this.matchToken('IDENTIFIER')) {
