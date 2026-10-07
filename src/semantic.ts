@@ -9,7 +9,7 @@ import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
 import { arithInfo } from './typeSystem';
 
 // ─── Acumulador de diagnósticos ───────────────────────────────────────────
-
+// maxArithmeticType: se esperaban tipos aritméticos, se recibió 
 class DiagnosticBag {
   private errors: string[] = [];
 
@@ -1079,6 +1079,7 @@ export class SemanticAnalyzer {
           (to === 'bool' && (from === 's32' || from === 'u32'));
         if (boolBridge) return to;
         if (this.isArithmetic(from) && this.isArithmetic(to)) return to;
+        if (typeof from === 'object' && from.kind ==='struct' &&  this._structCache.has(from.name) && (to === 's32')) return to;
         this.error(`cast no soportado: ${this.typeName(from)} → ${this.typeName(to)}`);
         return to;
       }
