@@ -182,7 +182,7 @@ export class Parser {
       // solo por compatibilidad host(), esperemos su decuso pronto
       if (this.matchToken('KEYWORD', 'host')) return this.parseImportDecl();
       // fromato actual, el correcto
-      //if (this.matchToken('KEYWORD', 'import')) return this.parseImportDecl();
+      if (this.matchToken('KEYWORD', 'import')) return this.parseImportDecl();
 
       if (this.currentToken.type === 'IDENTIFIER') {
         const receiver = this.parseGoTypeName();
@@ -190,7 +190,7 @@ export class Parser {
         return this.parseMethodDef(receiver);
       }
 
-      this.error("Solo se admite [import(...)] o [Tipo] como atributo");
+      this.error("Solo se admite [import(...)] o [host(...)] para interactuar con el host, o [Tipo] como atributo");
     }
 
     if (this.currentToken.value === 'var')    return this.parseVarDecl();
