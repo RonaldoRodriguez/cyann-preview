@@ -1409,7 +1409,7 @@ export class CodeGenerator {
     m.addFunction('mem_write8', ['i32', 'i32'], null, (b) => {
       b.getLocal('addr'); b.getLocal('v'); b.i32Store8();
     }, ['addr', 'v']);
-// maxArithmeticType: se esperaban tipos aritméticos, se recibió 
+
     m.addFunction('str_len', ['i32'], 'i32', (b) => {
       b.getLocal('s'); b.i32Const(4); b.i32Sub(); b.i32Load();
     }, ['s']);
