@@ -102,6 +102,7 @@ export class Lexer {
         'if', 'else', 'switch', 'case', 'default',
         'for', 'in', 'break', 'continue', 'return',
         'as', 'make', 'null', 'host', 'region',
+        'import'
       ];
       if (keywords.includes(id)) return { type: 'KEYWORD', value: id, line: startLine, column: startColumn };
       return { type: 'IDENTIFIER', value: id, line: startLine, column: startColumn };
