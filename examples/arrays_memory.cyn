@@ -1,0 +1,54 @@
+// arrays_memory.cyn — Arrays fijos/dinámicos, acceso, iteración y tamaños.
+
+@include("lib/std.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func check(got int, want int, label string) {
+    if got == want {
+        g_pass = g_pass + 1
+        println("  ok   " + label)
+    } else {
+        g_fail = g_fail + 1
+        println("  FAIL " + label)
+    }
+}
+
+func main() {
+    var fixed [3]int = [10, 20, 30]
+    check(len(fixed), 3, "fixed array length")
+    check(fixed[0], 10, "fixed array first element")
+
+    fixed[1] = fixed[0] + fixed[2]
+    check(fixed[1], 40, "fixed array indexed assignment")
+
+    var dynamic []int = make([]int, 4)
+    check(len(dynamic), 4, "make creates requested length")
+    dynamic[0] = 3
+    dynamic[1] = 5
+    dynamic[2] = 7
+    dynamic[3] = 9
+
+    var sum int = 0
+    for index, value in dynamic {
+        sum = sum + index + value
+    }
+    check(sum, 30, "for-in exposes index and value")
+
+    var copied []int = [2, 4, 6]
+    check(len(copied), 3, "array literal infers dynamic array from context")
+    check(copied[2], 6, "dynamic literal indexing")
+
+    var matrix [2][2]int = [[1, 2], [3, 4]]
+    check(matrix[0][1], 2, "nested fixed-array indexing")
+    check(size_of([3]int), 12, "fixed array type size")
+    check(size_of([]int), 4, "dynamic array is a 32-bit pointer")
+    check(size_of(*int), 4, "pointer size matches wasm32")
+    check(size_of(matrix), 16, "nested array value size")
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); panic("array/memory checks failed") }
+}
+
+main()

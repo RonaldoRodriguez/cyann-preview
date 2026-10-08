@@ -1,0 +1,7 @@
+// El operador de resto solo acepta enteros.
+
+func main() {
+    var invalid = 7.5 % 2.0
+}
+
+main()

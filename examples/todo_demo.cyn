@@ -5,7 +5,6 @@
 //   wasmtime demos/todo_demo.wasm
 
 @include("lib/std.cyn")
-@include("lib/std_v2.cyn")
 
 // ═════════════════════════════════════════════════════════
 // CONSTANTES

@@ -2,7 +2,7 @@
  * Módulo de Constant Folding (Plegado de Constantes) Independiente
  */
 
-import {
+import type {
   ArithmeticType,
   LiteralInference,
   ConstNode,
@@ -11,47 +11,10 @@ import {
   MathType,
   MathNode,
 } from './types';
-
-// ─────────────────────────────────────────────
-// Tablas de metadatos de tipos aritméticos
-// ─────────────────────────────────────────────
-
-export const signedness: Record<ArithmeticType, 'signed' | 'unsigned' | 'float'> = {
-  s32: 'signed',
-  u32: 'unsigned',
-  s64: 'signed',
-  u64: 'unsigned',
-  f32: 'float',
-  f64: 'float',
-};
-
-export const width: Record<ArithmeticType, number> = {
-  s32: 32,
-  u32: 32,
-  s64: 64,
-  u64: 64,
-  f32: 32,
-  f64: 64,
-};
-
-/**
- * Determina el tipo aritmético resultante (promoción) entre dos operandos.
- */
-export function maxArithmeticType(a: ArithmeticType, b: ArithmeticType): ArithmeticType {
-  if (a === b) return a;
-
-  if (signedness[a] === 'float' || signedness[b] === 'float') {
-    if (a === 'f64' || b === 'f64') return 'f64';
-    return 'f32';
-  }
-
-  const aSigned = signedness[a] === 'signed';
-  const bSigned = signedness[b] === 'signed';
-  const resultWidth = Math.max(width[a], width[b]);
-  const resultSigned = aSigned && bSigned;
-
-  return resultWidth === 32 ? (resultSigned ? 's32' : 'u32') : (resultSigned ? 's64' : 'u64');
-}
+import {
+  isArithmeticType, isIntegerType, maxArithmeticType, signedness, width,
+} from './typeSystem';
+export { maxArithmeticType, signedness, width } from './typeSystem';
 
 // ─────────────────────────────────────────────
 // Inferencia y creación de literales numéricos
@@ -211,14 +174,6 @@ function isComparisonOp(op: string): boolean {
 
 function isLogicalOp(op: string): boolean {
   return op === '&&' || op === '||';
-}
-
-function isIntegerType(t: MathType): t is ArithmeticType {
-  return t === 's32' || t === 'u32' || t === 's64' || t === 'u64';
-}
-
-function isArithmeticType(t: MathType): t is ArithmeticType {
-  return typeof t === 'string' && t !== 'string' && t !== 'bool' && t !== 'null' && t !== 'tuple';
 }
 
 // ─────────────────────────────────────────────

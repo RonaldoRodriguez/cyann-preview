@@ -1,7 +1,6 @@
 // methods.cyn — Métodos con self.
 
 //@include("lib/std.cyn")
-//@include("lib/std_v2.cyn")
 // std.cyn — runtime mínimo para cyann sobre WASI.
 //
 // Uso:

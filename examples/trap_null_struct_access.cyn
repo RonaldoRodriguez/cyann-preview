@@ -1,0 +1,6 @@
+// El acceso a campos mediante una referencia null debe provocar un trap.
+
+type Point struct { x int; y int }
+
+var point Point = null
+var invalid int = point.x

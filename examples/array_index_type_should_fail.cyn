@@ -1,0 +1,8 @@
+// Un índice de array debe ser s32 o u32.
+
+func main() {
+    var values [2]int = [10, 20]
+    var invalid = values[1.5]
+}
+
+main()

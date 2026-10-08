@@ -113,6 +113,7 @@ export interface CallNode {
   paramTypes: MathType[];
   returnTypes?: MathType[];
   importedFrom?: string;
+  resolvedBuiltin?: 'is_same' | { kind: 'len'; argumentType: ArrayType | DynArrayType };
 }
 
 export interface FunctionRefNode {
@@ -143,6 +144,7 @@ export interface ArrayAccessNode {
   index: MathNode;
   type: MathType;
   dynamic?: boolean;
+  arrayType?: ArrayType | DynArrayType;
 }
 
 export interface StructLiteralNode {
@@ -158,6 +160,7 @@ export interface StructAccessNode {
   fieldName: string;
   type: MathType;
   resolvedBaseType?: StructType;
+  resolvedField?: StructField;
 }
 
 export interface IncrementNode {
@@ -239,31 +242,6 @@ export type MathNode =
   | CaptureAccessNode
   | SizeOfNode;
 
-// ─────────────────────────────────────────────
-// TypeRegistry
-// ─────────────────────────────────────────────
-
-export interface TypeInfo {
-  kind: 'primitive' | 'struct' | 'array';
-  size: number;
-  align: number;
-  fields?: { name: string; type: string; offset: number; mathType?: MathType }[];
-  elementType?: string;
-  length?: number;
-  pointerTo?: string;
-  name?: string;
-}
-
-export interface StructFieldInput {
-  name: string;
-  type: string;
-  mathType?: MathType;
-}
-
-export interface StructFieldLayout extends StructFieldInput {
-  offset: number;
-}
-
 export interface MakeArrayNode {
   kind: 'make_array';
   typeExpr: MathType;
@@ -271,205 +249,3 @@ export interface MakeArrayNode {
   elementType?: MathType;
   type?: DynArrayType;
 }
-
-function fieldSize(info: TypeInfo): number {
-  return info.kind === 'struct' ? 4 : info.size;
-}
-
-function fieldAlign(info: TypeInfo): number {
-  return info.kind === 'struct' ? 4 : info.align;
-}
-
-export function computeStructLayout(
-  registry: TypeRegistry,
-  fields: StructFieldInput[],
-  selfName?: string
-): { size: number; align: number; fields: StructFieldLayout[] } {
-  let offset = 0;
-  let maxAlign = 1;
-  const fieldLayouts: StructFieldLayout[] = [];
-
-  for (const field of fields) {
-    let align: number;
-    let size: number;
-
-    if (selfName !== undefined && field.type === selfName) {
-      align = 4;
-      size = 4;
-    } else {
-      const info = registry.getType(field.type);
-      align = fieldAlign(info);
-      size = fieldSize(info);
-    }
-
-    offset = Math.ceil(offset / align) * align;
-    fieldLayouts.push({
-      name: field.name,
-      type: field.type,
-      offset,
-      mathType: field.mathType,
-    });
-    offset += size;
-    if (align > maxAlign) maxAlign = align;
-  }
-
-  const size = Math.max(1, Math.ceil(offset / maxAlign) * maxAlign);
-  return { size, align: maxAlign, fields: fieldLayouts };
-}
-
-export class TypeRegistry {
-  private types = new Map<string, TypeInfo>();
-
-  constructor() {
-    this.registerPrimitive('void', 0, 1);
-    this.registerPrimitive('i32', 4, 4);
-    this.registerPrimitive('i64', 8, 8);
-    this.registerPrimitive('f32', 4, 4);
-    this.registerPrimitive('f64', 8, 8);
-    this.registerPrimitive('byte', 1, 1);
-    this.registerPrimitive('int', 4, 4);
-    this.registerPrimitive('long', 8, 8);
-    this.registerPrimitive('float', 4, 4);
-    this.registerPrimitive('double', 8, 8);
-    this.registerPrimitive('bool', 1, 1);
-    this.registerPrimitive('char', 1, 1);
-    this.registerPrimitive('i8', 1, 1);
-    this.registerPrimitive('u8', 1, 1);
-    this.registerPrimitive('i16', 2, 2);
-    this.registerPrimitive('u16', 2, 2);
-    this.registerPrimitive('u32', 4, 4);
-    this.registerPrimitive('u64', 8, 8);
-    this.registerPrimitive('int8_t', 1, 1);
-    this.registerPrimitive('uint8_t', 1, 1);
-    this.registerPrimitive('int16_t', 2, 2);
-    this.registerPrimitive('uint16_t', 2, 2);
-    this.registerPrimitive('int32_t', 4, 4);
-    this.registerPrimitive('uint32_t', 4, 4);
-    this.registerPrimitive('int64_t', 8, 8);
-    this.registerPrimitive('uint64_t', 8, 8);
-    this.registerPrimitive('size_t', 4, 4);
-    this.registerPrimitive('ssize_t', 4, 4);
-    this.registerPrimitive('intptr_t', 4, 4);
-    this.registerPrimitive('uintptr_t', 4, 4);
-    this.registerPrimitive('usize', 4, 4);
-    this.registerPrimitive('isize', 4, 4);
-    this.registerPrimitive('uintptr', 4, 4);
-    this.registerPrimitive('string', 4, 4);
-  }
-
-  registerPrimitive(name: string, size: number, align: number): void {
-    if (this.types.has(name)) throw new Error(`El tipo '${name}' ya está registrado`);
-    this.types.set(name, { kind: 'primitive', size, align, name });
-  }
-
-  registerStruct(name: string, fields: StructFieldInput[]): void {
-    if (this.types.has(name)) throw new Error(`El tipo '${name}' ya está registrado`);
-    const layout = computeStructLayout(this, fields, name);
-    this.types.set(name, {
-      kind: 'struct',
-      size: layout.size,
-      align: layout.align,
-      fields: layout.fields,
-      name,
-    });
-  }
-
-  registerArray(name: string, elementType: string, length: number): void {
-    if (this.types.has(name)) throw new Error(`El tipo '${name}' ya está registrado`);
-    const elemInfo = this.getType(elementType);
-    this.types.set(name, {
-      kind: 'array',
-      size: elemInfo.size * length,
-      align: elemInfo.align,
-      elementType,
-      length,
-      name,
-    });
-  }
-
-  getType(name: string): TypeInfo {
-    if (name.endsWith('*')) {
-      const pointerTo = name.slice(0, -1);
-      return { kind: 'primitive', size: 4, align: 4, pointerTo, name };
-    }
-    const info = this.types.get(name);
-    if (!info) throw new Error(`Tipo no registrado: ${name}`);
-    return info;
-  }
-
-  hasType(name: string): boolean {
-    if (name.endsWith('*')) return true;
-    return this.types.has(name);
-  }
-
-  getFieldType(structName: string, fieldName: string): TypeInfo {
-    const structInfo = this.getType(structName);
-    if (structInfo.kind !== 'struct') throw new Error(`'${structName}' no es un struct`);
-    const field = structInfo.fields?.find(f => f.name === fieldName);
-    if (!field) throw new Error(`Campo '${fieldName}' no encontrado en '${structName}'`);
-    return this.getType(field.type);
-  }
-
-  resolvePath(structName: string, path: string[]): TypeInfo {
-    let currentTypeName = structName;
-    const visited = new Set<string>();
-
-    for (const fieldName of path) {
-      const fieldType = this.getFieldType(currentTypeName, fieldName);
-
-      if (fieldType.pointerTo) {
-        currentTypeName = fieldType.pointerTo;
-      } else if (fieldType.kind === 'struct') {
-        currentTypeName = fieldType.name!;
-      } else {
-        return fieldType;
-      }
-
-      if (visited.has(currentTypeName)) throw new Error(`Ciclo detectado en ruta: ${currentTypeName}`);
-      visited.add(currentTypeName);
-    }
-
-    return this.getType(currentTypeName);
-  }
-
-  visitStruct(
-    structName: string,
-    visitor: (field: StructFieldLayout, depth: number) => void,
-    depth = 0,
-    visited = new Set<string>()
-  ): void {
-    const structInfo = this.getType(structName);
-    if (structInfo.kind !== 'struct') return;
-
-    if (visited.has(structName)) return;
-    visited.add(structName);
-
-    for (const field of structInfo.fields ?? []) {
-      visitor(field, depth);
-      const fieldType = this.getType(field.type);
-      if (fieldType.kind === 'struct') {
-        this.visitStruct(field.type, visitor, depth + 1, visited);
-      } else if (fieldType.pointerTo) {
-        this.visitStruct(fieldType.pointerTo, visitor, depth + 1, visited);
-      }
-    }
-  }
-
-  getSize(name: string): number {
-    return this.getType(name).size;
-  }
-// Global no definida
-  getAlign(name: string): number {
-    return this.getType(name).align;
-  }
-
-  toJSON(): Record<string, TypeInfo> {
-    const result: Record<string, TypeInfo> = {};
-    for (const [key, value] of this.types.entries()) {
-      result[key] = value;
-    }
-    return result;
-  }
-}
-
-// Tipo no registrado

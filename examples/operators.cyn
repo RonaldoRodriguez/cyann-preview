@@ -1,0 +1,87 @@
+// operators.cyn — Operadores, precedencia, conversiones y actualizaciones.
+
+@include("lib/std.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func check(got int, want int, label string) {
+    if got == want {
+        g_pass = g_pass + 1
+        println("  ok   " + label)
+    } else {
+        g_fail = g_fail + 1
+        println("  FAIL " + label)
+    }
+}
+
+func check_bool(got bool, want bool, label string) {
+    if got == want {
+        g_pass = g_pass + 1
+        println("  ok   " + label)
+    } else {
+        g_fail = g_fail + 1
+        println("  FAIL " + label)
+    }
+}
+
+func check_f64(got f64, want f64, label string) {
+    if got == want {
+        g_pass = g_pass + 1
+        println("  ok   " + label)
+    } else {
+        g_fail = g_fail + 1
+        println("  FAIL " + label)
+    }
+}
+
+func main() {
+    check(2 + 3 * 4, 14, "multiplication binds before addition")
+    check((2 + 3) * 4, 20, "parentheses")
+    check(20 / 3, 6, "integer division")
+    check(20 % 3, 2, "integer remainder")
+    check(-7, 0 - 7, "unary negation")
+
+    check(6 & 3, 2, "bitwise and")
+    check(4 | 1, 5, "bitwise or")
+    check(6 ^ 3, 5, "bitwise xor")
+    check(3 << 2, 12, "left shift")
+    check(12 >> 2, 3, "right shift")
+    check(~0, -1, "bitwise not")
+
+    check_bool(2 < 3 && 4 >= 4, true, "logical and and comparisons")
+    check_bool(2 > 3 || 4 == 4, true, "logical or and equality")
+    check_bool(!(2 == 3), true, "logical not")
+    check_bool(3 != 4, true, "not equal")
+
+    check_f64((7 as f64) / 2.0, 3.5, "integer to f64 cast")
+    check_f64((1.5f + 2.5f) as f64, 4.0, "f32 arithmetic")
+    check(7.9 as int, 7, "f64 to int cast")
+    check("42" as int, 42, "string to int cast")
+    check_str(42 as string, "42", "int to string cast")
+    check_bool("abc" < "abd", true, "string ordering")
+
+    var value int = 10
+    value++
+    check(value, 11, "postfix increment statement")
+    value--
+    check(value, 10, "postfix decrement statement")
+    check(++value, 11, "prefix increment expression")
+    check(value--, 11, "postfix decrement expression result")
+    check(value, 10, "postfix decrement updates operand")
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); panic("operator checks failed") }
+}
+
+func check_str(got string, want string, label string) {
+    if got == want {
+        g_pass = g_pass + 1
+        println("  ok   " + label)
+    } else {
+        g_fail = g_fail + 1
+        println("  FAIL " + label)
+    }
+}
+
+main()

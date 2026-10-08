@@ -1,0 +1,4 @@
+// El acceso fuera de límites debe provocar un trap de WebAssembly.
+
+var values [2]int = [10, 20]
+var invalid int = values[2]

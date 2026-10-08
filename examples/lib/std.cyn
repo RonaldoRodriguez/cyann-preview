@@ -1,20 +1,10 @@
-// std.cyn — runtime mínimo para cyann sobre WASI.
+// std.cyn — Utilidades básicas para programas Cyann que usan WASI.
 //
-// Uso:
-//     @include("std.cyn")
-//     func main() { println("hola") }
+// Uso desde un archivo de examples/:
+//     @include("lib/std.cyn")
 //
-// Compilado con `cyann main.cyn main.wasm`, se ejecuta con cualquier
-// runtime WASI: wasmtime, wasmer, wasmedge, node --experimental-wasi,
-// bun, deno.
-
-// ─── Imports del host (WASI) ─────────────────────────────────────
-//
-//   fd_write(fd, iovs, iovs_len, nwritten) -> errno
-//
-// Un iovec es { buf: i32, buf_len: i32 } — 8 bytes.
-// Nosotros usamos una sola entrada, así que reservamos 8 bytes
-// una vez y la reutilizamos para cada escritura.
+// La biblioteca combina salida WASI, conversión básica, helpers numéricos
+// y utilidades de strings. Los enteros `int` son de 32 bits en wasm32.
 
 [host("wasi_snapshot_preview1", "fd_write")]
 func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
@@ -22,100 +12,220 @@ func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
 [host("wasi_snapshot_preview1", "proc_exit")]
 func _wasi_proc_exit(rval int)
 
-// ─── Buffers de scratch ─────────────────────────────────────────
-//
-// Reservamos 8 bytes para el iovec (buf_ptr + buf_len) y 4 para
-// el "nwritten". Vive para siempre, nadie los libera. Es 12 bytes
-// en total: irrelevante.
+var _iovec int = arena_alloc(8)
+var _nwrite int = arena_alloc(4)
 
-var _iovec   int = arena_alloc(8)
-var _nwrite  int = arena_alloc(4)
-
-// ─── Escritura de bajo nivel ────────────────────────────────────
-
-func _write(fd int, ptr int, len int) {
-    mem_write32(_iovec + 0, ptr)
-    mem_write32(_iovec + 4, len)
+func _write(fd int, ptr int, length int) {
+    mem_write32(_iovec, ptr)
+    mem_write32(_iovec + 4, length)
     _wasi_fd_write(fd, _iovec, 1, _nwrite)
 }
 
-// ─── API pública ────────────────────────────────────────────────
-
-func print(s string) {
-    _write(1, s, str_len(s))
+func print(value string) {
+    _write(1, value, str_len(value))
 }
 
-func print(s int) {
-    print_int(s)
+func print(value int) {
+    print_int(value)
 }
 
-func println(s string) {
-    print(s)
+func print(value bool) {
+    print_bool(value)
+}
+
+func println(value string) {
+    print(value)
     print("\n")
 }
+
 func println(value int) {
     println_int(value)
 }
 
-
-func eprint(s string) {
-    _write(2, s, str_len(s))
+func println(value bool) {
+    println_bool(value)
 }
 
-func eprintln(s string) {
-    eprint(s)
+func eprint(value string) {
+    _write(2, value, str_len(value))
+}
+
+func eprintln(value string) {
+    eprint(value)
     eprint("\n")
 }
 
-func print_char(c int) {
-    // Reusamos el iovec: escribimos 1 byte desde un buffer de 4
-    // bytes que también vive para siempre.
-    mem_write8(_nwrite, c)
+func print_char(value int) {
+    mem_write8(_nwrite, value)
     _write(1, _nwrite, 1)
 }
 
-func print_int(n int) {
-    if n == 0 {
-        print_char(48)   // '0'
-        return
-    }
-    if n < 0 {
-        print_char(45)   // '-'
-        n = -n
-    }
+func _print_int(fd int, value int) {
     region {
-        var digits [12]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        var i int = 0
-        for n > 0 {
-            digits[i] = 48 + (n % 10)
-            n = n / 10
-            i++
-        }
-        for i > 0 {
-            i--
-            print_char(digits[i])
-        }
+        var text string = str_from_int(value)
+        _write(fd, text, str_len(text))
     }
 }
 
+func print_int(value int) {
+    _print_int(1, value)
+}
 
-func println_int(n int) {
-    print_int(n)
+func println_int(value int) {
+    print_int(value)
     print_char(10)
 }
 
-func eprint_int(n int) {
-    // Mismo algoritmo, pero a stderr.
-    if n == 0 { _write(2, _nwrite, 0); eprint("0"); return }
-    if n < 0 { eprint("-"); n = -n }
-    region {
-        var digits [12]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        var i int = 0
-        for n > 0 { digits[i] = 48 + (n % 10); n = n / 10; i++ }
-        for i > 0 { i--; mem_write8(_nwrite, digits[i]); _write(2, _nwrite, 1) }
-    }
+func eprint_int(value int) {
+    _print_int(2, value)
 }
 
 func exit(code int) {
     _wasi_proc_exit(code)
+}
+
+func panic(message string) {
+    eprintln(message)
+    exit(1)
+}
+
+func assert(condition bool) {
+    if !condition {
+        panic("assertion failed")
+    }
+}
+
+func min(a int, b int) int {
+    if a < b { return a }
+    return b
+}
+
+func max(a int, b int) int {
+    if a > b { return a }
+    return b
+}
+
+func abs(value int) int {
+    if value < 0 { return -value }
+    return value
+}
+
+func clamp(value int, low int, high int) int {
+    if value < low { return low }
+    if value > high { return high }
+    return value
+}
+
+func sign(value int) int {
+    if value < 0 { return -1 }
+    if value > 0 { return 1 }
+    return 0
+}
+
+func int_is_even(value int) bool {
+    return value % 2 == 0
+}
+
+func int_is_odd(value int) bool {
+    return value % 2 != 0
+}
+
+func min(a f32, b f32) f32 {
+    if a < b { return a }
+    return b
+}
+
+func max(a f32, b f32) f32 {
+    if a > b { return a }
+    return b
+}
+
+func clamp(value f32, low f32, high f32) f32 {
+    if value < low { return low }
+    if value > high { return high }
+    return value
+}
+
+func abs(value f32) f32 {
+    if value < 0.0 { return -value }
+    return value
+}
+
+func min(a f64, b f64) f64 {
+    if a < b { return a }
+    return b
+}
+
+func max(a f64, b f64) f64 {
+    if a > b { return a }
+    return b
+}
+
+func clamp(value f64, low f64, high f64) f64 {
+    if value < low { return low }
+    if value > high { return high }
+    return value
+}
+
+func abs(value f64) f64 {
+    if value < 0.0 { return -value }
+    return value
+}
+
+func print_bool(value bool) {
+    if value { print("true") }
+    else { print("false") }
+}
+
+func println_bool(value bool) {
+    print_bool(value)
+    print_char(10)
+}
+
+func str_from_bool(value bool) string {
+    if value { return "true" }
+    return "false"
+}
+
+func str_is_empty(value string) bool {
+    return str_len(value) == 0
+}
+
+func str_is_not_empty(value string) bool {
+    return str_len(value) != 0
+}
+
+func digit_to_str(digit int) string {
+    switch digit {
+    case 0: return "0"
+    case 1: return "1"
+    case 2: return "2"
+    case 3: return "3"
+    case 4: return "4"
+    case 5: return "5"
+    case 6: return "6"
+    case 7: return "7"
+    case 8: return "8"
+    case 9: return "9"
+    }
+    return "?"
+}
+
+func str_from_int(value int) string {
+    if value == 0 { return "0" }
+
+    var negative bool = value < 0
+    if value > 0 {
+        value = -value
+    }
+
+    var result string = ""
+    for value < 0 {
+        var digit int = 0 - (value % 10)
+        result = digit_to_str(digit) + result
+        value = value / 10
+    }
+
+    if negative { return "-" + result }
+    return result
 }

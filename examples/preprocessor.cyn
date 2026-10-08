@@ -1,0 +1,11 @@
+// preprocessor.cyn — Includes repetidos se expanden una sola vez.
+
+@include("lib/std.cyn")
+@include("lib/std.cyn")
+
+func main() {
+    assert(2 + 2 == 4)
+    println("TODO OK")
+}
+
+main()

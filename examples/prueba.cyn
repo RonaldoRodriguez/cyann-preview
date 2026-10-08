@@ -1,5 +1,5 @@
 // prueba.cyn
-@include("lib/std_v2.cyn")
+@include("lib/std.cyn")
 
 func contador() fn() int {
     var counter = 0

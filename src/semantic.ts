@@ -1,15 +1,25 @@
 import { ProgramNode, StatementNode, FunctionDefNode, ImportDeclNode, MultiDeclNode } from './parser';
 import {
-  MathNode, MathType, FunctionType, StructType, TypeRegistry,
+  MathNode, MathType, FunctionType, StructType, StructField,
   FunctionLiteralNode, ClosureNode, CaptureAccessNode,
   CapturedVar, VariableNode, ArithmeticType, PatternNode,
-  MakeArrayNode, CallNode, StructAccessNode, SizeOfNode, computeStructLayout,
+  MakeArrayNode, CallNode, StructAccessNode, SizeOfNode,
 } from './types';
 import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
-import { arithInfo } from './typeSystem';
+import {
+  TypeRegistry, computeStructLayout,
+  typesEqual as areTypesEqual, describeType,
+  isArithmeticType, isIntegerType, isAssignableType as areTypesAssignable,
+  maxArithmeticType, supportsStructuralEquality,
+} from './typeSystem';
+
+const analyzedProgramBrand: unique symbol = Symbol('analyzedProgram');
+
+export interface AnalyzedProgram extends ProgramNode {
+  readonly [analyzedProgramBrand]: true;
+}
 
 // ─── Acumulador de diagnósticos ───────────────────────────────────────────
-// maxArithmeticType: se esperaban tipos aritméticos, se recibió 
 class DiagnosticBag {
   private errors: string[] = [];
 
@@ -392,7 +402,7 @@ export class SemanticAnalyzer {
     return captured;
   }
 
-  public analyzeProgram(program: ProgramNode): void {
+  public analyzeProgram(program: ProgramNode): AnalyzedProgram {
     this.currentLevel = 0;
     this.hoistedFunctions = [];
     this.anonStructs.clear();
@@ -420,6 +430,7 @@ export class SemanticAnalyzer {
         errs.map((e, i) => `  ${i + 1}. ${e}`).join('\n')
       );
     }
+    return Object.assign(program, { [analyzedProgramBrand]: true as const });
   }
 
   private collectTypeAliases(stmts: StatementNode[]): void {
@@ -905,7 +916,7 @@ export class SemanticAnalyzer {
   }
 
   private isComparableType(t: MathType): boolean {
-    if (this.isArithmetic(t)) return true;
+    if (isArithmeticType(t)) return true;
     if (t === 'string' || t === 'bool') return true;
     if (typeof t === 'object') {
       if (t.kind === 'struct' || t.kind === 'pointer' || t.kind === 'dynarray' || t.kind === 'function') return true;
@@ -929,7 +940,7 @@ export class SemanticAnalyzer {
           }
           return;
         }
-        if (!this.isArithmetic(t)) {
+        if (!isArithmeticType(t)) {
           this.error(`Patrón numérico no válido para tipo ${this.typeName(t)}`);
           return;
         }
@@ -1049,8 +1060,11 @@ export class SemanticAnalyzer {
         if (node.op === 'not' && operandType !== 'bool') {
           this.error("El operador '!' requiere un bool");
         }
-        if (node.op === 'bitnot' && (operandType === 'f32' || operandType === 'f64')) {
-          this.error("El operador '~' no acepta flotantes");
+        if (node.op === 'bitnot' && !isIntegerType(operandType)) {
+          this.error("El operador '~' requiere un tipo entero");
+        }
+        if (node.op === 'neg' && !isArithmeticType(operandType)) {
+          this.error("La negación requiere un tipo numérico");
         }
         node.type = operandType;
         return operandType;
@@ -1077,7 +1091,7 @@ export class SemanticAnalyzer {
           (from === 'bool' && (to === 's32' || to === 'u32')) ||
           (to === 'bool' && (from === 's32' || from === 'u32'));
         if (boolBridge) return to;
-        if (this.isArithmetic(from) && this.isArithmetic(to)) return to;
+        if (isArithmeticType(from) && isArithmeticType(to)) return to;
         if (typeof from === 'object' && from.kind ==='struct' &&  this._structCache.has(from.name) && (to === 's32')) return to;
         if ((from === 's32') &&  typeof to === 'object' && to.kind === 'struct' && this._structCache.has(to.name)) return to; 
         //if ((from === 's32') &&  typeof to === 'object' && to.kind === 'dynarray') return to; 
@@ -1113,7 +1127,7 @@ export class SemanticAnalyzer {
           if (at1 === 'null' && at2 === 'null') {
             node.paramTypes = ['null', 'null'];
             node.type = 'bool';
-            (node as any).isSameBuiltin = true;
+            node.resolvedBuiltin = 'is_same';
             return 'bool';
           }
 
@@ -1144,7 +1158,7 @@ export class SemanticAnalyzer {
 
           node.paramTypes = [common, common];
           node.type = 'bool';
-          (node as any).isSameBuiltin = true;
+          node.resolvedBuiltin = 'is_same';
           return 'bool';
         }
         if (node.name === 'len' && node.args.length === 1 && !this.scopeControl.has('len')) {
@@ -1155,7 +1169,7 @@ export class SemanticAnalyzer {
           }
           node.paramTypes = [at];
           node.type = 's32';
-          (node as any).isLenBuiltin = true;
+          node.resolvedBuiltin = { kind: 'len', argumentType: at };
           return 's32';
         }
 
@@ -1481,6 +1495,7 @@ export class SemanticAnalyzer {
         const field = baseType.fields.find(c => c.name === node.fieldName);
         if (field) {
           node.resolvedBaseType = baseType;
+          node.resolvedField = field;
           node.type = this.resolveType(field.type);
           return node.type;
         }
@@ -1520,7 +1535,12 @@ export class SemanticAnalyzer {
           node.type = 's32';
           return 's32';
         }
-        this.analyzeExpression(node.index);
+        const indexType = this.resolveType(this.analyzeExpression(node.index));
+        if (indexType !== 's32' && indexType !== 'u32') {
+          this.error(`El índice del array debe ser s32 o u32, se obtuvo ${this.typeName(indexType)}`);
+        }
+        node.arrayType = baseType;
+        node.dynamic = baseType.kind === 'dynarray';
         node.type = baseType.elementType;
         return node.type;
       }
@@ -1541,7 +1561,7 @@ export class SemanticAnalyzer {
           }
           this.scopeControl.checkMutable(root.name);
         }
-        if (!this.isArithmetic(operandType)) {
+        if (!isArithmeticType(operandType)) {
           this.error(
             `El operador '${increment.operator}' requiere un tipo numérico; ` +
             `se obtuvo ${this.typeName(operandType)}`
@@ -1778,6 +1798,12 @@ export class SemanticAnalyzer {
         && typeof rightType === 'object' && rightType.kind === 'struct'
         && this.typesEqual(leftType, rightType)
         && (op === '==' || op === '!=')) {
+      if (!supportsStructuralEquality(leftType)) {
+        this.error(
+          `La comparación estructural de '${leftType.name || '(anónimo)'}' ` +
+          `contiene campos cuyo tipo no es comparable`
+        );
+      }
       return 'bool';
     }
 
@@ -1786,34 +1812,30 @@ export class SemanticAnalyzer {
       this.error(`Operador '${op}' no permitido entre booleanos`);
       return 'bool';
     }
-    if (typeof leftType === 'string' && typeof rightType === 'string') {
+    if (leftType === 'string' && rightType === 'string') {
       if (['==', '!=', '<', '<=', '>', '>='].includes(op)) return 'bool';
-      return leftType;
+      if (leftType === 'string' && op === '+') return 'string';
+      this.error(`Operador '${op}' no permitido entre ${this.typeName(leftType)} y ${this.typeName(rightType)}`);
+      return 's32';
     }
     const arithOps = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '==', '!=', '<', '<=', '>', '>=']);
-    if (arithOps.has(op) && this.isArithmetic(leftType) && this.isArithmetic(rightType)) {
+    if (arithOps.has(op) && isArithmeticType(leftType) && isArithmeticType(rightType)) {
+      if (op === '%' && (!isIntegerType(leftType) || !isIntegerType(rightType))) {
+        this.error('El operador % requiere operandos enteros');
+        return 's32';
+      }
+      if (['&', '|', '^', '<<', '>>'].includes(op) &&
+          (!isIntegerType(leftType) || !isIntegerType(rightType))) {
+        this.error(`El operador '${op}' requiere operandos enteros`);
+        return 's32';
+      }
       if (['==', '!=', '<', '<=', '>', '>='].includes(op)) return 'bool';
-      return this.promoteArith(leftType, rightType);
+      return maxArithmeticType(leftType, rightType);
     }
     this.error(
       `Operación '${op}' no permitida entre ${this.typeName(leftType)} y ${this.typeName(rightType)}`
     );
     return 's32';
-  }
-
-  private isArithmetic(t: MathType): boolean {
-    return t === 's32' || t === 'u32' || t === 's64' || t === 'u64' || t === 'f32' || t === 'f64';
-  }
-
-  private promoteArith(a: MathType, b: MathType): MathType {
-    if (a === b) return a;
-    const isFloat = (x: MathType) => x === 'f32' || x === 'f64';
-    if (isFloat(a) || isFloat(b)) return a === 'f64' || b === 'f64' ? 'f64' : 'f32';
-    const w = (x: MathType) => (x === 's64' || x === 'u64' ? 64 : 32);
-    const s = (x: MathType) => x === 's32' || x === 's64';
-    const width = Math.max(w(a), w(b));
-    const signed = s(a) && s(b);
-    return width === 32 ? (signed ? 's32' : 'u32') : (signed ? 's64' : 'u64');
   }
 
   private registryTypeName(type: MathType, seen?: Set<string>): string {
@@ -1994,51 +2016,11 @@ export class SemanticAnalyzer {
   }
 
   private typesEqual(left: MathType, right: MathType): boolean {
-    if (left === right) return true;
-    if (typeof left !== 'object' || typeof right !== 'object') return false;
-    if (left.kind === 'pointer' && right.kind === 'pointer') {
-      return this.typesEqual(this.resolveType(left.targetType), this.resolveType(right.targetType));
-    }
-    if (left.kind === 'struct' && right.kind === 'struct') {
-      if (left.name === '' && right.name === '') {
-        if (left.fields.length !== right.fields.length) return false;
-        for (let i = 0; i < left.fields.length; i++) {
-          if (left.fields[i].name !== right.fields[i].name) return false;
-          if (!this.typesEqual(left.fields[i].type, right.fields[i].type)) return false;
-        }
-        return true;
-      }
-      return left.name === right.name;
-    }
-    if (left.kind === 'array' && right.kind === 'array') {
-      return left.length === right.length && this.typesEqual(left.elementType, right.elementType);
-    }
-    if (left.kind === 'dynarray' && right.kind === 'dynarray') {
-      return this.typesEqual(left.elementType, right.elementType);
-    }
-    if (left.kind === 'function' && right.kind === 'function') {
-      return left.paramTypes.length === right.paramTypes.length &&
-        left.returnTypes.length === right.returnTypes.length &&
-        left.paramTypes.every((t, i) => this.typesEqual(t, right.paramTypes[i])) &&
-        left.returnTypes.every((t, i) => this.typesEqual(t, right.returnTypes[i]));
-    }
-    return false;
+    return areTypesEqual(this.resolveType(left), this.resolveType(right));
   }
 
   private typeName(type: MathType): string {
-    if (typeof type === 'object') {
-      if (type.kind === 'struct') {
-        if (type.name === '') {
-          return `struct { ${type.fields.map(f => `${f.name}: ${this.typeName(f.type)}`).join('; ')} }`;
-        }
-        return type.name;
-      }
-      if (type.kind === 'pointer') return `*${this.typeName(type.targetType)}`;
-      if (type.kind === 'function') return '(fn)';
-      if (type.kind === 'array') return `[${this.typeName(type.elementType)}; ${type.length}]`;
-      if (type.kind === 'dynarray') return `[${this.typeName(type.elementType)}]`;
-    }
-    return String(type);
+    return describeType(type);
   }
 
   private contextualizeArrayLiteral(expr: MathNode, target: MathType): boolean {
@@ -2061,34 +2043,6 @@ export class SemanticAnalyzer {
   }
 
   private isAssignableType(source: MathType, target: MathType): boolean {
-    if (this.typesEqual(source, target)) return true;
-
-    if (typeof source === 'string' && typeof target === 'string') {
-      const fi = arithInfo[source as ArithmeticType];
-      const ti = arithInfo[target as ArithmeticType];
-      if (fi && ti) {
-        if (!fi.isFloat && !ti.isFloat && fi.width < ti.width) return true;
-        if (!fi.isFloat && ti.isFloat && target === 'f64' && fi.width <= 32) return true;
-        if (fi.isFloat && ti.isFloat && source === 'f32' && target === 'f64') return true;
-      }
-    }
-
-    if (source === 'null' && typeof target === 'object' &&
-        (target.kind === 'pointer' || target.kind === 'struct' ||
-         target.kind === 'dynarray' || target.kind === 'function')) return true;
-
-    if (typeof source === 'object' && source.kind === 'struct' &&
-        typeof target === 'object' && target.kind === 'pointer') {
-      return this.typesEqual(source, target.targetType);
-    }
-    if (typeof source === 'object' && source.kind === 'pointer' &&
-        typeof target === 'object' && target.kind === 'pointer') {
-      return this.typesEqual(source.targetType, target.targetType);
-    }
-    if (typeof source === 'object' && source.kind === 'array' &&
-        typeof target === 'object' && target.kind === 'dynarray') {
-      return this.isAssignableType(source.elementType, target.elementType);
-    }
-    return false;
+    return areTypesAssignable(this.resolveType(source), this.resolveType(target));
   }
 }

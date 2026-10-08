@@ -1,5 +1,6 @@
 // mangler.ts
 import { MathType, FunctionType } from './types';
+import { typesEqual } from './typeSystem';
 
 export function mangleType(t: MathType): string {
   if (typeof t === 'string') {
@@ -53,45 +54,7 @@ export function mangleFunctionName(name: string, paramTypes: MathType[]): string
 export function functionParamsEqual(a: FunctionType, b: FunctionType): boolean {
   if (a.paramTypes.length !== b.paramTypes.length) return false;
   for (let i = 0; i < a.paramTypes.length; i++) {
-    if (!mathTypesEqual(a.paramTypes[i], b.paramTypes[i])) return false;
+    if (!typesEqual(a.paramTypes[i], b.paramTypes[i])) return false;
   }
   return true;
-}
-
-function mathTypesEqual(a: MathType, b: MathType): boolean {
-  if (a === b) return true;
-  if (typeof a === 'object' && typeof b === 'object') {
-    if (a.kind === 'struct' && b.kind === 'struct') {
-      if (a.name === '' && b.name === '') {
-        if (a.fields.length !== b.fields.length) return false;
-        for (let i = 0; i < a.fields.length; i++) {
-          if (a.fields[i].name !== b.fields[i].name) return false;
-          if (!mathTypesEqual(a.fields[i].type, b.fields[i].type)) return false;
-        }
-        return true;
-      }
-      return a.name === b.name;
-    }
-    if (a.kind === 'array' && b.kind === 'array') {
-      return a.length === b.length && mathTypesEqual(a.elementType, b.elementType);
-    }
-    if (a.kind === 'dynarray' && b.kind === 'dynarray') {
-      return mathTypesEqual(a.elementType, b.elementType);
-    }
-    if (a.kind === 'pointer' && b.kind === 'pointer') {
-      return mathTypesEqual(a.targetType, b.targetType);
-    }
-    if (a.kind === 'function' && b.kind === 'function') {
-      if (a.paramTypes.length !== b.paramTypes.length) return false;
-      for (let i = 0; i < a.paramTypes.length; i++) {
-        if (!mathTypesEqual(a.paramTypes[i], b.paramTypes[i])) return false;
-      }
-      if (a.returnTypes.length !== b.returnTypes.length) return false;
-      for (let i = 0; i < a.returnTypes.length; i++) {
-        if (!mathTypesEqual(a.returnTypes[i], b.returnTypes[i])) return false;
-      }
-      return true;
-    }
-  }
-  return false;
 }

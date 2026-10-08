@@ -1,7 +1,6 @@
 // labeled_loops.cyn — break y continue etiquetados.
 
 @include("lib/std.cyn")
-@include("lib/std_v2.cyn")
 
 var g_pass int = 0
 var g_fail int = 0

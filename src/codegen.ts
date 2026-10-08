@@ -1,4 +1,6 @@
 import { FunctionIRBuilder, ModuleBuilder } from './compiler';
+import type { AnalyzedProgram } from './semantic';
+import { Optimizer } from './optimizer';
 import {
   MathType, MathNode, BooleanLiteralNode, CallNode,
   FunctionRefNode, ArithmeticType, StructType,
@@ -14,9 +16,8 @@ import {
 } from './parser';
 import {
   sizeOfType, typesEqual, semanticToWasmType, maxArithmeticType,
-  signedness, width, arithInfo,
+  signedness, width, arithInfo, isArithmeticType,
 } from './typeSystem';
-import { eliminateDeadFunctions, eliminateDeadImports, eliminateDeadStrings } from './dce';
 
 export type CompileResult = MathType | 'void';
 
@@ -50,8 +51,7 @@ function getStructType(t: MathType): StructType | null {
   return null;
 }
 function isArithType(t: MathType | undefined): t is ArithmeticType {
-  return typeof t === 'string' &&
-    (t === 's32' || t === 'u32' || t === 's64' || t === 'u64' || t === 'f32' || t === 'f64');
+  return t !== undefined && isArithmeticType(t);
 }
 
 export function canConvertF64ToF32(value: number): boolean {
@@ -185,7 +185,6 @@ export function emitStoreForType(b: FunctionIRBuilder, t: MathType, offset = 0):
 // ─────────────────────────────────────────────────────────────────────
 export class ExpressionCompiler {
   private tmp = 0;
-  private compilingStructEq = new Set<string>();
 
   constructor(
     private b: FunctionIRBuilder,
@@ -346,12 +345,8 @@ export class ExpressionCompiler {
 
       case 'make_array': {
         const n = node as MakeArrayNode;
-        if (!n.elementType || !n.type) {
-          throw new Error('make_array sin resolver (semantic no rellenó elementType/type)');
-        }
-        const es = sizeOfType(n.elementType);
+        const es = sizeOfType(n.elementType!);
         const lenT = this.compileValue(n.lengthExpr);
-        if (lenT !== 's32' && lenT !== 'u32') throw new Error('make() requiere longitud entera');
         const lt = this.fresh('len', 'i32'); this.b.setLocal(lt);
         this.b.getLocal(lt); this.b.i32Const(es); this.b.i32Mul();
         this.b.i32Const(4); this.b.i32Add();
@@ -359,7 +354,7 @@ export class ExpressionCompiler {
         const base = this.fresh('makearr', 'i32'); this.b.setLocal(base);
         this.b.getLocal(base); this.b.getLocal(lt); this.b.i32Store();
         this.b.getLocal(base); this.b.i32Const(4); this.b.i32Add();
-        return n.type;
+        return n.type!;
       }
       case 'binary':
         return this.compileBinary(node as BinaryNode);
@@ -386,24 +381,21 @@ export class ExpressionCompiler {
       case 'call': {
         const c = node as CallNode;
 
-        if ((c as any).isSameBuiltin) {
+        if (c.resolvedBuiltin === 'is_same') {
           this.compileValue(c.args[0]);
           this.compileValue(c.args[1]);
           this.b.i32Eq();
           return 'bool';
         }
-        if ((c as any).isLenBuiltin) {
-          const at = (c.args[0] as any).type as MathType;
-          if (typeof at === 'object' && at.kind === 'dynarray') {
+        if (typeof c.resolvedBuiltin === 'object' && c.resolvedBuiltin.kind === 'len') {
+          const at = c.resolvedBuiltin.argumentType;
+          if (at.kind === 'dynarray') {
             this.compileValue(c.args[0]);
             this.b.i32Const(4); this.b.i32Sub(); this.b.i32Load();
             return 's32';
           }
-          if (typeof at === 'object' && at.kind === 'array') {
-            this.b.i32Const(at.length);
-            return 's32';
-          }
-          throw new Error('len() requiere array/dynarray');
+          this.b.i32Const(at.length);
+          return 's32';
         }
 
         if (this.envFunctions.has(c.name)) {
@@ -424,8 +416,7 @@ export class ExpressionCompiler {
         this.b.callByName(RT_ALLOC);
         const base = this.fresh('struct', 'i32'); this.b.setLocal(base);
         for (const fv of s.fields) {
-          const fd = st.fields.find(f => f.name === fv.name);
-          if (!fd) throw new Error(`Campo '${fv.name}' no existe en '${st.name}'`);
+          const fd = st.fields.find(f => f.name === fv.name)!;
           this.b.getLocal(base);
           const at = this.compileValue(fv.value);
           if (!typesEqual(at, fd.type)) handleImplicitConversion(this.b, fv.value, at, fd.type);
@@ -438,10 +429,7 @@ export class ExpressionCompiler {
       case 'struct_access': {
         const a = node as StructAccessNode;
         const baseValueType = this.compileValue(a.base);
-        const bt = a.resolvedBaseType ?? getStructType(baseValueType);
-        if (!bt) throw new Error(`struct_access sobre ${bt}`);
-        const field = bt.fields.find(f => f.name === a.fieldName);
-        if (!field) throw new Error(`Campo '${a.fieldName}' no existe en '${bt.name}'`);
+        const field = a.resolvedField!;
         const base = this.fresh('struct_base', 'i32'); this.b.setLocal(base);
         if (isNullablePointerType(baseValueType)) this.assertNotNullPointer(base);
         this.b.getLocal(base);
@@ -451,10 +439,7 @@ export class ExpressionCompiler {
       }
       case 'array_literal': {
         const a = node as ArrayLiteralNode;
-        const arrayType = a.type as MathType;
-        if (typeof arrayType !== 'object' || (arrayType.kind !== 'array' && arrayType.kind !== 'dynarray')) {
-          throw new Error('array_literal sin tipo de array válido');
-        }
+        const arrayType = a.type;
         const elementType = arrayType.elementType;
         const elemSize = sizeOfType(elementType);
         const total = elemSize * a.elements.length;
@@ -482,10 +467,8 @@ export class ExpressionCompiler {
       }
       case 'array_access': {
         const a = node as ArrayAccessNode;
-        const bt = this.compileValue(a.base);
-        if (typeof bt !== 'object' || (bt.kind !== 'array' && bt.kind !== 'dynarray')) {
-          throw new Error('array_access sobre no-array');
-        }
+        this.compileValue(a.base);
+        const bt = a.arrayType!;
         const base = this.fresh('ab', 'i32'); this.b.setLocal(base);
         this.compileValue(a.index);
         const idx = this.fresh('ai', 'i32'); this.b.setLocal(idx);
@@ -616,10 +599,7 @@ export class ExpressionCompiler {
         this.b.i32Ne();
         for (const fp of pattern.fields) {
           if (fp.pattern.kind === 'wildcard') continue;
-          const field = st.fields.find(f => f.name === fp.name);
-          if (!field) {
-            throw new Error(`Campo '${fp.name}' no existe en '${st.name}'`);
-          }
+          const field = st.fields.find(f => f.name === fp.name)!;
           this.b.getLocal(ptrLocal);
           emitLoadForType(this.b, field.type, field.offset);
           this.emitPatternMatchOnStack(fp.pattern, field.type);
@@ -630,46 +610,18 @@ export class ExpressionCompiler {
     }
   }
   private emitStructEqBody(ltmp: string, rtmp: string, st: StructType): void {
-    const stKey = st.name === '' ? null : st.name;
-    if (stKey !== null && this.compilingStructEq.has(stKey)) {
-      throw new Error(
-        `comparación estructural de '${stKey}': el struct es auto-referencial; ` +
-        `la comparación profunda generaría código infinito. ` +
-        `Compara los campos uno a uno o guarda la igualdad de punteros por separado.`
-      );
+    let first = true;
+    for (const field of st.fields) {
+      const ft = field.type;
+      this.b.getLocal(ltmp);
+      emitLoadForType(this.b, ft, field.offset);
+      this.b.getLocal(rtmp);
+      emitLoadForType(this.b, ft, field.offset);
+      this.emitEqForType(ft);
+      if (first) first = false;
+      else this.b.i32And();
     }
-    if (stKey !== null) this.compilingStructEq.add(stKey);
-
-    try {
-      let first = true;
-      for (const field of st.fields) {
-        const ft = field.type;
-        if (!this.isComparableField(ft)) {
-          throw new Error(
-            `comparación estructural de '${st.name || '(anónimo)'}': ` +
-            `campo '${field.name}' de tipo ${this.typeDesc(ft)} no soportado`
-          );
-        }
-        this.b.getLocal(ltmp);
-        emitLoadForType(this.b, ft, field.offset);
-        this.b.getLocal(rtmp);
-        emitLoadForType(this.b, ft, field.offset);
-        this.emitEqForType(ft);
-        if (first) first = false;
-        else this.b.i32And();
-      }
-      if (first) this.b.i32Const(1);
-    } finally {
-      if (stKey !== null) this.compilingStructEq.delete(stKey);
-    }
-  }
-
-  private isComparableField(t: MathType): boolean {
-    if (typeof t === 'string') return true;
-    if (t.kind === 'pointer') return true;
-    if (t.kind === 'struct')  return true;
-    if (t.kind === 'array')   return this.isComparableField(t.elementType);
-    return false;
+    if (first) this.b.i32Const(1);
   }
 
   private emitEqForType(t: MathType): void {
@@ -719,12 +671,6 @@ export class ExpressionCompiler {
   }
 
   private emitArrayEq(elemType: MathType, length: number): void {
-    if (length > 256) {
-      throw new Error(
-        `comparación de arrays de longitud ${length} no soportada ` +
-        `(máximo 256 elementos por array)`
-      );
-    }
     const lp = this.fresh('ae_L', 'i32');
     const rp = this.fresh('ae_R', 'i32');
     this.b.setLocal(rp);
@@ -744,22 +690,46 @@ export class ExpressionCompiler {
     if (first) this.b.i32Const(1);
   }
 
-  private typeDesc(t: MathType): string {
-    if (typeof t === 'string') return t;
-    if (t.kind === 'struct') return `struct ${t.name || '(anónimo)'}`;
-    if (t.kind === 'array') return `[${this.typeDesc(t.elementType)}; ${t.length}]`;
-    if (t.kind === 'dynarray') return `[]${this.typeDesc(t.elementType)}`;
-    if (t.kind === 'pointer') return `*${this.typeDesc(t.targetType)}`;
-    if (t.kind === 'function') return 'fn';
-    return '?';
-  }
-
   private compileBinaryOnStack(node: BinaryNode): CompileResult {
     const lt = this.compileValue(node.left);
     const rt = this.compileValue(node.right);
 
+    return this.compileBinaryOperands(node, lt, rt, true, () => {}, () => {});
+  }
+
+  private compileBinaryWithTemps(node: BinaryNode): CompileResult {
+    const lt = this.compileValue(node.left);
+    const ltmp = this.fresh('L', semanticToWasmType(lt) as any); this.b.setLocal(ltmp);
+    const rt = this.compileValue(node.right);
+    const rtmp = this.fresh('R', semanticToWasmType(rt) as any); this.b.setLocal(rtmp);
+
+    return this.compileBinaryOperands(
+      node,
+      lt,
+      rt,
+      false,
+      () => this.b.getLocal(ltmp),
+      () => this.b.getLocal(rtmp),
+    );
+  }
+
+  private compileBinaryOperands(
+    node: BinaryNode,
+    lt: MathType,
+    rt: MathType,
+    operandsOnStack: boolean,
+    pushLeft: () => void,
+    pushRight: () => void,
+  ): CompileResult {
+    const pushOperands = () => {
+      if (operandsOnStack) return;
+      pushLeft();
+      pushRight();
+    };
+
     if (lt === 'null' || rt === 'null') {
       if (node.op === '==' || node.op === '!=') {
+        pushOperands();
         this.b.i32Ne();
         if (node.op === '==') this.b.i32Eqz();
         return 'bool';
@@ -768,11 +738,13 @@ export class ExpressionCompiler {
     }
 
     if (node.op === '&&' || node.op === '||') {
+      pushOperands();
       if (node.op === '&&') this.b.i32And(); else this.b.i32Or();
       return 'bool';
     }
 
     if (lt === 'string' && rt === 'string') {
+      pushOperands();
       if (node.op === '+') { this.b.callByName('str_concat'); return 'string'; }
       if (node.op === '==') { this.b.callByName('str_eq'); return 'bool'; }
       if (node.op === '!=') { this.b.callByName('str_ne'); return 'bool'; }
@@ -791,6 +763,7 @@ export class ExpressionCompiler {
     }
 
     if (lt === 'bool' && rt === 'bool') {
+      pushOperands();
       switch (node.op) {
         case '==': this.b.i32Eq(); return 'bool';
         case '!=': this.b.i32Ne(); return 'bool';
@@ -799,89 +772,37 @@ export class ExpressionCompiler {
     }
 
     if (lt !== rt || !isArithType(lt)) {
-      throw new Error(`compileBinaryOnStack: tipos inesperados (${String(lt)} vs ${String(rt)})`);
+      if (operandsOnStack) {
+        throw new Error(`compileBinaryOnStack: tipos inesperados (${String(lt)} vs ${String(rt)})`);
+      }
+    }
+
+    const leftType = lt as ArithmeticType;
+    const rightType = rt as ArithmeticType;
+    const resultType = maxArithmeticType(leftType, rightType);
+    if (operandsOnStack) {
+      if (lt !== resultType || rt !== resultType) {
+        throw new Error('Operandos aritméticos sin normalizar en codegen');
+      }
+    } else {
+      pushLeft();
+      if (leftType !== resultType) this.emitConversion(leftType, resultType);
+      pushRight();
+      if (rightType !== resultType) this.emitConversion(rightType, resultType);
     }
 
     if (['==','!=','<','<=','>','>='].includes(node.op)) {
-      this.emitComparison(node.op, lt);
+      this.emitComparison(node.op, resultType);
       return 'bool';
     }
+
     if (['&','|','^','<<','>>'].includes(node.op)) {
-      this.emitBitwise(node.op, lt);
-      return lt;
-    }
-    this.emitBinary(node.op, lt);
-    return lt;
-  }
-
-  private compileBinaryWithTemps(node: BinaryNode): CompileResult {
-    const lt = this.compileValue(node.left);
-    const ltmp = this.fresh('L', semanticToWasmType(lt) as any); this.b.setLocal(ltmp);
-    const rt = this.compileValue(node.right);
-    const rtmp = this.fresh('R', semanticToWasmType(rt) as any); this.b.setLocal(rtmp);
-
-    if (lt === 'null' || rt === 'null') {
-      if (node.op === '==' || node.op === '!=') {
-        this.b.getLocal(ltmp); this.b.getLocal(rtmp); this.b.i32Ne();
-        if (node.op === '==') this.b.i32Eqz();
-        return 'bool';
-      }
-      throw new Error('Operación no soportada con null');
-    }
-    if (node.op === '&&' || node.op === '||') {
-      this.b.getLocal(ltmp); this.b.getLocal(rtmp);
-      if (node.op === '&&') this.b.i32And(); else this.b.i32Or();
-      return 'bool';
-    }
-    if (lt === 'string' && rt === 'string') {
-      if (node.op === '+') {
-        this.b.getLocal(ltmp); this.b.getLocal(rtmp);
-        this.b.callByName('str_concat');
-        return 'string';
-      }
-      if (node.op === '==') { this.b.getLocal(ltmp); this.b.getLocal(rtmp); this.b.callByName('str_eq'); return 'bool'; }
-      if (node.op === '!=') { this.b.getLocal(ltmp); this.b.getLocal(rtmp); this.b.callByName('str_ne'); return 'bool'; }
-      if (node.op === '<' || node.op === '<=' || node.op === '>' || node.op === '>=') {
-        this.b.getLocal(ltmp); this.b.getLocal(rtmp); this.b.callByName('str_cmp');
-        this.b.i32Const(0);
-        switch (node.op) {
-          case '<': this.b.i32LtS(); break;
-          case '<=': this.b.i32LeS(); break;
-          case '>': this.b.i32GtS(); break;
-          case '>=': this.b.i32GeS(); break;
-        }
-        return 'bool';
-      }
-      throw new Error(`Operación '${node.op}' no soportada entre strings`);
-    }
-    if (lt === 'bool' && rt === 'bool') {
-      this.b.getLocal(ltmp); this.b.getLocal(rtmp);
-      switch (node.op) {
-        case '==': this.b.i32Eq(); return 'bool';
-        case '!=': this.b.i32Ne(); return 'bool';
-        default: throw new Error(`Operación '${node.op}' no soportada entre bools`);
-      }
+      this.emitBitwise(node.op, resultType);
+      return resultType;
     }
 
-    if (['==','!=','<','<=','>','>='].includes(node.op)) {
-      const r2 = maxArithmeticType(lt as ArithmeticType, rt as ArithmeticType);
-      this.b.getLocal(ltmp); if (lt !== r2) this.emitConversion(lt as ArithmeticType, r2);
-      this.b.getLocal(rtmp); if (rt !== r2) this.emitConversion(rt as ArithmeticType, r2);
-      this.emitComparison(node.op, r2);
-      return 'bool';
-    }
-    if (['&','|','^','<<','>>'].includes(node.op)) {
-      const r2 = maxArithmeticType(lt as ArithmeticType, rt as ArithmeticType);
-      this.b.getLocal(ltmp); if (lt !== r2) this.emitConversion(lt as ArithmeticType, r2);
-      this.b.getLocal(rtmp); if (rt !== r2) this.emitConversion(rt as ArithmeticType, r2);
-      this.emitBitwise(node.op, r2);
-      return r2;
-    }
-    const r2 = maxArithmeticType(lt as ArithmeticType, rt as ArithmeticType);
-    this.b.getLocal(ltmp); if (lt !== r2) this.emitConversion(lt as ArithmeticType, r2);
-    this.b.getLocal(rtmp); if (rt !== r2) this.emitConversion(rt as ArithmeticType, r2);
-    this.emitBinary(node.op, r2);
-    return r2;
+    this.emitBinary(node.op, resultType);
+    return resultType;
   }
 
   public compileIncrementAsStatement(node: {
@@ -891,11 +812,7 @@ export class ExpressionCompiler {
     type: MathType;
   }): void {
     const operand = node.operand as any;
-    const type = operand.type as MathType;
-
-    if (!isArithType(type)) {
-      throw new Error(`No se puede aplicar ${node.operator} al tipo ${String(type)}`);
-    }
+    const type = operand.type as ArithmeticType;
 
     let targetAddress: string | null = null;
 
@@ -936,10 +853,7 @@ export class ExpressionCompiler {
 
   private compileIncrement(node: { operator: '++' | '--'; operand: MathNode; prefix: boolean; type: MathType }): MathType {
     const operand = node.operand as any;
-    const type = operand.type as MathType;
-    if (!isArithType(type)) {
-      throw new Error(`No se puede aplicar ${node.operator} al tipo ${String(type)}`);
-    }
+    const type = node.type as ArithmeticType;
     const oldValue = this.fresh('inc_old', semanticToWasmType(type) as any);
     const newValue = this.fresh('inc_new', semanticToWasmType(type) as any);
     let targetAddress: string | null = null;
@@ -1002,10 +916,7 @@ export class ExpressionCompiler {
 
     if (target.kind === 'struct_access') {
       const baseValueType = target.base.type as MathType;
-      const baseType = target.resolvedBaseType ?? getStructType(baseValueType);
-      if (!baseType) throw new Error('El incremento requiere un campo de struct');
-      const field = baseType.fields.find((c: { name: any; }) => c.name === target.fieldName);
-      if (!field) throw new Error(`Campo '${target.fieldName}' no existe en '${baseType.name}'`);
+      const field = target.resolvedField!;
       this.compileValue(target.base);
       const base = this.fresh('inc_struct_base', 'i32'); this.b.setLocal(base);
       if (isNullablePointerType(baseValueType)) this.assertNotNullPointer(base);
@@ -1014,10 +925,7 @@ export class ExpressionCompiler {
       return address;
     }
     if (target.kind === 'array_access') {
-      const arrayType = target.base.type as MathType;
-      if (typeof arrayType !== 'object' || (arrayType.kind !== 'array' && arrayType.kind !== 'dynarray')) {
-        throw new Error('El incremento requiere un elemento de array');
-      }
+      const arrayType = target.arrayType!;
       this.compileValue(target.base);
       const base = this.fresh('inc_array_base', 'i32'); this.b.setLocal(base);
       this.compileValue(target.index);
@@ -1076,8 +984,15 @@ export class ExpressionCompiler {
     const isS = signedness[t] === 'signed';
     const is32 = width[t] === 32;
     if (isF) {
-      const m: any = {'==':'f64Eq','!=':'f64Ne','<':'f64Lt','<=':'f64Le','>':'f64Gt','>=':'f64Ge'};
-      (this.b as any)[m[op]]();
+      switch (op) {
+        case '==': t === 'f32' ? this.b.f32Eq() : this.b.f64Eq(); break;
+        case '!=': t === 'f32' ? this.b.f32Ne() : this.b.f64Ne(); break;
+        case '<': t === 'f32' ? this.b.f32Lt() : this.b.f64Lt(); break;
+        case '<=': t === 'f32' ? this.b.f32Le() : this.b.f64Le(); break;
+        case '>': t === 'f32' ? this.b.f32Gt() : this.b.f64Gt(); break;
+        case '>=': t === 'f32' ? this.b.f32Ge() : this.b.f64Ge(); break;
+        default: throw new Error(`Comparación flotante no soportada: ${op}`);
+      }
     } else if (is32) {
       const m: any = {
         '==':'i32Eq','!=':'i32Ne',
@@ -1147,7 +1062,8 @@ export class CodeGenerator {
   private envBaseAddr = 0;
   private envOffsets = new Map<string, number>();
 
-  constructor(stmts: StatementNode[]) {
+  constructor(program: AnalyzedProgram) {
+    const stmts = program.body;
     this.modular = new ModuleBuilder();
     this.modular.addMemory(1);
     this.modular.addExport('memory', 'memory', 0);
@@ -1218,9 +1134,7 @@ export class CodeGenerator {
   }
 
   public build(): Uint8Array {
-    const liveNames = eliminateDeadFunctions(this.modular);
-    eliminateDeadImports(this.modular, liveNames);
-    eliminateDeadStrings(this.modular);
+    new Optimizer().optimizeModule(this.modular);
     this.resolveEnvAddresses();
     this.fillEnvData();
     return this.modular.build();
@@ -1310,7 +1224,8 @@ export class CodeGenerator {
       }
 
       const SKIP = new Set([
-        'type', 'resolvedBaseType', 'elementType', 'targetType',
+        'type', 'resolvedBaseType', 'resolvedField', 'arrayType',
+        'resolvedBuiltin', 'elementType', 'targetType',
         'paramTypes', 'returnTypes',
       ]);
       for (const key of Object.keys(node)) {
@@ -1594,14 +1509,11 @@ export class CodeGenerator {
 
       case 'multi_decl': {
         const md = stmt as MultiDeclNode;
-        const returnTypes = (md.expr as any).returnTypes as MathType[] | undefined;
-        if (!returnTypes || !md.uniqueNames ||
-            md.uniqueNames.length !== returnTypes.length) {
-          throw new Error('multi_decl sin resolver (semantic no rellenó uniqueNames/returnTypes)');
-        }
+        const returnTypes = (md.expr as CallNode | CallIndirectNode).returnTypes!;
+        const uniqueNames = md.uniqueNames!;
 
-        for (let i = 0; i < md.uniqueNames.length; i++) {
-          const un = md.uniqueNames[i];
+        for (let i = 0; i < uniqueNames.length; i++) {
+          const un = uniqueNames[i];
           if (un !== null) {
             b.addLocal(un, semanticToWasmType(returnTypes[i]));
           }
@@ -1609,8 +1521,8 @@ export class CodeGenerator {
 
         ec.compile(md.expr);
 
-        for (let i = md.uniqueNames.length - 1; i >= 0; i--) {
-          const un = md.uniqueNames[i];
+        for (let i = uniqueNames.length - 1; i >= 0; i--) {
+          const un = uniqueNames[i];
           if (un === null) {
             b.drop();
           } else {
@@ -1687,10 +1599,7 @@ export class CodeGenerator {
       case 'for_in': {
         const fi = stmt as ForInNode;
         const iterableType = (fi.iterable as any).type as MathType;
-        if (typeof iterableType !== 'object' ||
-            (iterableType.kind !== 'array' && iterableType.kind !== 'dynarray')) {
-          throw new Error('for_in sobre no-array');
-        }
+        const arrayType = iterableType as Extract<MathType, { kind: 'array' | 'dynarray' }>;
 
         const arrTemp = `$forin_arr_${this.ctr++}`;
         b.addLocal(arrTemp, 'i32');
@@ -1699,10 +1608,10 @@ export class CodeGenerator {
 
         const lenTemp = `$forin_len_${this.ctr++}`;
         b.addLocal(lenTemp, 'i32');
-        if (iterableType.kind === 'dynarray') {
+        if (arrayType.kind === 'dynarray') {
           b.getLocal(arrTemp); b.i32Const(4); b.i32Sub(); b.i32Load(); b.setLocal(lenTemp);
         } else {
-          b.i32Const(iterableType.length); b.setLocal(lenTemp);
+          b.i32Const(arrayType.length); b.setLocal(lenTemp);
         }
 
         const idxTemp = `$forin_idx_${this.ctr++}`;
@@ -1711,7 +1620,7 @@ export class CodeGenerator {
 
         const indexUnique = (fi as any).indexUnique as string | null | undefined;
         const valueUnique = (fi as any).valueUnique as string | null | undefined;
-        const elemType = iterableType.elementType;
+        const elemType = arrayType.elementType;
 
         if (indexUnique != null) b.addLocal(indexUnique, 'i32');
         if (valueUnique != null) b.addLocal(valueUnique, semanticToWasmType(elemType) as any);
@@ -1752,10 +1661,7 @@ export class CodeGenerator {
 
       case 'switch': {
         const s = stmt as SwitchNode;
-        const exprType = s.exprType;
-        if (!exprType) {
-          throw new Error('switch sin tipo resuelto (semantic no seteó exprType)');
-        }
+        const exprType = s.exprType!;
 
         if (s.cases.length === 0) {
           if (s.defaultBody) for (const st of s.defaultBody) this.compileStatement(st, b);
@@ -1914,10 +1820,7 @@ export class CodeGenerator {
     if (target.kind === 'struct_access') {
       const sa = target as StructAccessNode;
       const baseValueType = (sa.base as any).type as MathType;
-      const baseTy = sa.resolvedBaseType ?? getStructType(baseValueType);
-      if (!baseTy) throw new Error('struct_access LValue sobre no-struct');
-      const field = baseTy.fields.find(f => f.name === sa.fieldName);
-      if (!field) throw new Error(`Campo '${sa.fieldName}' no existe en '${baseTy.name}'`);
+      const field = sa.resolvedField!;
       const baseAddr = `$addr_${this.ctr++}`;
       b.addLocal(baseAddr, 'i32');
       ec.compile(sa.base);
@@ -1933,15 +1836,11 @@ export class CodeGenerator {
     }
     if (target.kind === 'array_access') {
       const aa = target as ArrayAccessNode;
-      const bt = (aa.base as any).type as MathType;
-      if (typeof bt !== 'object' || (bt.kind !== 'array' && bt.kind !== 'dynarray')) {
-        throw new Error('array_access LValue sobre no-array');
-      }
+      const bt = aa.arrayType!;
       const { addrLocal: baseAddr } = this.resolveLValueAddr(aa.base, b, ec);
       const idx = `$idx_${this.ctr++}`;
       b.addLocal(idx, 'i32');
-      const it = ec.compile(aa.index);
-      if (it !== 's32' && it !== 'u32') throw new Error('índice no entero');
+      ec.compile(aa.index);
       b.setLocal(idx);
       const addr = `$addr_${this.ctr++}`;
       b.addLocal(addr, 'i32');

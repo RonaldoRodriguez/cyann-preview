@@ -2,7 +2,7 @@
 //
 // Compila un .cyn y, si no le pasás archivo de salida, lo ejecuta con WASI.
 //
-// El runtime `lib/std_v2.cyn` importa `wasi_snapshot_preview1.fd_write` para
+// La biblioteca `examples/lib/std.cyn` importa `wasi_snapshot_preview1.fd_write` para
 // implementar `println`, así que al ejecutar directo necesitamos proveer WASI.
 // Si la instancia no está disponible, delegamos a wasmtime.
 
@@ -14,37 +14,57 @@ import { CodeGenerator } from './codegen';
 import { preprocess } from './preprocessor';
 import * as path from 'node:path';
 
+type WasiModule = typeof import('node:wasi');
+type WasiOptions = ConstructorParameters<WasiModule['WASI']>[0];
+type WasiImports = Parameters<typeof WebAssembly.instantiate>[1];
+
+type WasiRuntime = InstanceType<WasiModule['WASI']> & {
+  exports?: WasiImports;
+};
+
+type WasiConstructor = new (options: WasiOptions) => WasiRuntime;
+
 async function compile(inputPath: string): Promise<Uint8Array> {
   const raw      = await Bun.file(inputPath).text();
   const basePath = path.dirname(path.resolve(inputPath));
   const source   = await preprocess(raw, basePath);
   const ast = new Parser(new Lexer(source)).parseProgram();
-  new SemanticAnalyzer().analyzeProgram(ast);
-  const opt = new Optimizer().optimizeProgram(ast);
-  return new CodeGenerator(opt.body).build();
+  const analyzed = new SemanticAnalyzer().analyzeProgram(ast);
+  const optimized = new Optimizer().optimizeProgram(analyzed);
+  return new CodeGenerator(optimized).build();
 }
 
 /**
  * Intenta cargar una clase WASI utilizable.
  *   1. Bun built-in: `import { WASI } from 'bun'` (versiones viejas).
  *   2. Node.js:      `import { WASI } from 'node:wasi'` (Bun >= 1.1).
- * Devuelve `null` si ninguna está disponible.
- *
- * El `as any` es porque `@types/bun` no declara `WASI` como export, y no
- * queremos romper `tsc`.
+ * Devuelve los errores de carga si ninguna está disponible, para que el CLI
+ * pueda mostrar por qué no se pudo usar WASI.
  */
-async function loadWASI(): Promise<any | null> {
-  try {
-    const bun: any = await import('bun');
-    if (typeof bun.WASI === 'function') return bun.WASI;
-  } catch { /* ignore */ }
+async function loadWASI(): Promise<{ constructor: WasiConstructor | null; errors: string[] }> {
+  const errors: string[] = [];
 
   try {
-    const nodeWasi: any = await import('node:wasi');
-    if (typeof nodeWasi.WASI === 'function') return nodeWasi.WASI;
-  } catch { /* ignore */ }
+    const bun = await import('bun') as unknown as { WASI?: WasiConstructor };
+    if (typeof bun.WASI === 'function') return { constructor: bun.WASI, errors };
+    errors.push('bun no exporta WASI');
+  } catch (error: unknown) {
+    errors.push(`bun: ${errorMessage(error)}`);
+  }
 
-  return null;
+  try {
+    const nodeWasi = await import('node:wasi');
+    if (typeof nodeWasi.WASI === 'function') return { constructor: nodeWasi.WASI, errors };
+    errors.push('node:wasi no exporta WASI');
+  } catch (error: unknown) {
+    errors.push(`node:wasi: ${errorMessage(error)}`);
+  }
+
+  return { constructor: null, errors };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function run() {
@@ -73,35 +93,37 @@ async function run() {
   }
 
   // Sin archivo de salida: ejecutar. Necesitamos WASI.
-  const WASIClass = await loadWASI();
+  const { constructor: WASIClass, errors } = await loadWASI();
   if (!WASIClass) {
     console.error(
       'No se pudo cargar WASI (ni desde bun ni desde node:wasi).\n' +
+      `${errors.join('\n')}\n` +
       'Compilá a un archivo y ejecutalo con wasmtime:\n' +
       `  bun src/run.ts ${cliArg} out.wasm && wasmtime out.wasm`
     );
     process.exit(1);
   }
 
-  const wasi = new WASIClass({ args: [], env: {} });
+  const wasi = new WASIClass({ args: [], env: {}, version: 'preview1' });
 
   // La API de Bun antigua expone los imports en `wasi.exports`.
   // La API de Node.js los expone en `wasi.wasiImport`. Probamos las dos.
-  const imports = (wasi as any).wasiImport ?? (wasi as any).exports;
+  const imports = wasi.wasiImport ?? wasi.exports;
+  if (!imports) {
+    throw new Error('La implementación WASI cargada no expone wasiImport ni exports');
+  }
 
   const instantiated = await WebAssembly.instantiate(wasmBytes, {
     wasi_snapshot_preview1: imports,
   });
 
-  const instance = (instantiated as any).instance ?? instantiated;
+  const instance = instantiated instanceof WebAssembly.Instance
+    ? instantiated
+    : instantiated.instance;
   wasi.start(instance);
 }
 
-run().catch((err: any) => {
-  if (err instanceof Error) {
-    console.error('Error:', err.message);
-  } else {
-    console.error('Error:', err);
-  }
+run().catch((error: unknown) => {
+  console.error('Error:', errorMessage(error));
   process.exit(1);
 });

@@ -1,7 +1,6 @@
 // struct_eq_cache.cyn — Env cache de closures + equality estructural.
 
 @include("lib/std.cyn")
-@include("lib/std_v2.cyn")
 
 type Int int
 

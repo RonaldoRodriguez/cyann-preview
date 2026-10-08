@@ -1,0 +1,62 @@
+// function_values.cyn — References, callbacks, lambdas y capturas mutables.
+
+@include("lib/std.cyn")
+
+var g_pass int = 0
+var g_fail int = 0
+
+func check(got int, want int, label string) {
+    if got == want {
+        g_pass = g_pass + 1
+        println("  ok   " + label)
+    } else {
+        g_fail = g_fail + 1
+        println("  FAIL " + label)
+    }
+}
+
+type IntTransform func(int) int
+
+func double(value int) int {
+    return value * 2
+}
+
+func apply(transform IntTransform, value int) int {
+    return transform(value)
+}
+
+func make_counter() fn() int {
+    var count int = 0
+    return func() int {
+        count++
+        return count
+    }
+}
+
+func make_adder(offset int) fn(int) int {
+    return func(value int) int {
+        return value + offset
+    }
+}
+
+func main() {
+    var named IntTransform = double
+    check(apply(named, 21), 42, "named function reference")
+    check(apply(func(value int) int { return value + 1 }, 41), 42, "inline lambda callback")
+
+    var first = make_counter()
+    var second = make_counter()
+    check(first(), 1, "first mutable capture")
+    check(first(), 2, "capture preserves state")
+    check(second(), 1, "closures have independent environments")
+
+    var add_ten = make_adder(10)
+    var add_hundred = make_adder(100)
+    check(add_ten(5), 15, "capture immutable parameter")
+    check(add_hundred(5), 105, "separate closure captures")
+
+    if g_fail == 0 { println("TODO OK") }
+    else { println("HAY FALLOS"); panic("function-value checks failed") }
+}
+
+main()
