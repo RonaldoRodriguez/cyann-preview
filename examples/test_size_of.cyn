@@ -1,0 +1,65 @@
+@include("lib/std.cyn")
+
+type Person struct {
+    name string
+    edad int
+}
+
+type Node struct {
+    val int
+    next *Node
+}
+
+type Large struct {
+    a int
+    b int64
+    c bool
+}
+
+func main() {
+    println("--- Pruebas de size_of ---")
+
+    // Primitivos con paréntesis
+    print("size_of(int): "); println(size_of(int))
+    print("size_of(i32): "); println(size_of(i32))
+    print("size_of(i64): "); println(size_of(i64))
+    print("size_of(f32): "); println(size_of(f32))
+    print("size_of(f64): "); println(size_of(f64))
+    print("size_of(bool): "); println(size_of(bool))
+    print("size_of(byte): "); println(size_of(byte))
+    print("size_of(i8): "); println(size_of(i8))
+    print("size_of(i16): "); println(size_of(i16))
+    print("size_of(string): "); println(size_of(string))
+
+    // Primitivos sin paréntesis
+    print("size_of int: "); println(size_of int)
+    print("size_of i64: "); println(size_of i64)
+
+    // Structs con y sin paréntesis
+    print("size_of(Person): "); println(size_of(Person))
+    print("size_of Person: "); println(size_of Person)
+    print("size_of(Node): "); println(size_of(Node))
+    print("size_of(Large): "); println(size_of(Large))
+
+    // Punteros y arrays
+    print("size_of(*int): "); println(size_of(*int))
+    print("size_of(*Person): "); println(size_of(*Person))
+    print("size_of([10]int): "); println(size_of([10]int))
+    print("size_of([5]Person): "); println(size_of([5]Person))
+    print("size_of([]int): "); println(size_of([]int))
+
+    // Expresiones y variables
+    var p Person = Person{name: "Juan", edad: 30}
+    print("size_of(p): "); println(size_of(p))
+    print("size_of(p.edad): "); println(size_of(p.edad))
+    print("size_of(p.name): "); println(size_of(p.name))
+    print("size_of(42): "); println(size_of(42))
+
+    // Uso en expresiones aritméticas
+    var total int = size_of(Person) * 10
+    print("size_of(Person) * 10: "); println(total)
+
+    println("--- Pruebas completadas con éxito ---")
+}
+
+main()
