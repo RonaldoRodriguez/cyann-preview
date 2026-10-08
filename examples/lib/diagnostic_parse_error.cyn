@@ -1,0 +1,5 @@
+// Included fixture with intentionally invalid syntax.
+
+func broken( {
+    return 1
+}

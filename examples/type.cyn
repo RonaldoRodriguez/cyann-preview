@@ -1,4 +1,4 @@
-[import("wasi_snapshot_preview1", "fd_write")]
+import host("wasi_snapshot_preview1", "fd_write")
 func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
 
 

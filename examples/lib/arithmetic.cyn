@@ -1,0 +1,23 @@
+@include("std.cyn")
+
+import "double.cyn"::double_value
+
+type LocalBox struct {
+   value int
+}
+
+var hidden_counter int = 0
+
+func add_values(left int, right int) int {
+   return left + right
+}
+
+func local_helper(value int) int {
+   hidden_counter++
+   var box LocalBox = LocalBox{value: value}
+   return box.value + 1
+}
+
+export func add_and_double(left int, right int) int {
+   return double_value(local_helper(add_values(left, right)) - 1)
+}

@@ -1,0 +1,6 @@
+import "lib/arithmetic.cyn"::add_and_double
+import "lib/double.cyn"::add_and_double
+
+func main() {}
+
+main()

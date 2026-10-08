@@ -1,0 +1,5 @@
+func main() {
+    import "lib/arithmetic.cyn"::add_and_double
+}
+
+main()

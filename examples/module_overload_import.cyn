@@ -1,0 +1,11 @@
+@include("lib/std.cyn")
+
+import "lib/overloads.cyn"::convert
+
+func main() {
+    assert(convert(4) == 5)
+    assert(convert(4.0) == 4.5)
+    println("overload import TODO OK")
+}
+
+main()

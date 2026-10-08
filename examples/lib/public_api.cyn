@@ -1,0 +1,17 @@
+export type Score int
+
+export type Point struct {
+    x int
+    y int
+}
+
+export var shared_count int = 0
+
+export func next_score() Score {
+    shared_count++
+    return shared_count
+}
+
+export func make_point(x int, y int) Point {
+    return Point{x: x, y: y}
+}

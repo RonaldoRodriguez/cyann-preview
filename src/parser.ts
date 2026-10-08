@@ -1,4 +1,6 @@
 import { Lexer, Token } from './lexer';
+import { SourceLocation } from './sourceMap';
+import { formatDiagnostic } from './diagnostics';
 import { createConstNode } from './constants';
 import {
   MathNode, MathType, CallNode, StructLiteralNode, CallIndirectNode,
@@ -16,6 +18,10 @@ export interface VarConstNode {
   uniqueName?: string;
   isGlobal?: boolean;
   isConst?: boolean;
+  exported?: boolean;
+  exportName?: string;
+  wasmExport?: boolean;
+  wasmExportName?: string;
 }
 
 export interface ShortVarDeclNode {
@@ -39,18 +45,26 @@ export interface FunctionDefNode {
   body: StatementNode[];
   mangledName?: string;
   receiver?: MathType;
+  exported?: boolean;
+  exportName?: string;
+  wasmExport?: boolean;
+  wasmExportName?: string;
 }
 
 export interface StructDefNode {
   kind: 'struct_def';
   name: string;
   fields: { name: string; type: MathType }[];
+  exported?: boolean;
+  exportName?: string;
 }
 
 export interface TypeAliasNode {
   kind: 'type_alias';
   name: string;
   targetType: MathType;
+  exported?: boolean;
+  exportName?: string;
 }
 
 export interface IfNode {
@@ -106,11 +120,18 @@ export interface ImportDeclNode {
   returnType: MathType | null;
 }
 
-export type StatementNode =
+export interface ModuleImportNode {
+  kind: 'module_import';
+  path: string;
+  symbol: string;
+}
+
+export type StatementNode = (
   | VarConstNode | ShortVarDeclNode | MultiDeclNode | AssignNode | FunctionDefNode | StructDefNode
   | TypeAliasNode
   | IfNode | ForNode | ForInNode | SwitchNode | RegionNode
-  | BreakNode | ContinueNode | ReturnNode | ExpressionStmtNode | ImportDeclNode;
+  | BreakNode | ContinueNode | ReturnNode | ExpressionStmtNode | ImportDeclNode | ModuleImportNode
+) & { sourceLocation?: SourceLocation };
 
 export interface ProgramNode { kind: 'program'; body: StatementNode[]; }
 
@@ -121,6 +142,7 @@ export class Parser {
   private currentToken!: Token;
   private _noStructLiteral = 0;
   private _loopStack: { supportsContinue: boolean; label?: string }[] = [];
+  private _blockDepth = 0;
 
   constructor(lexer: Lexer) { this.lexer = lexer; this.advance(); }
 
@@ -137,7 +159,14 @@ export class Parser {
   }
 
   private error(msg: string): never {
-    throw new Error(`${msg} en la línea ${this.currentToken.line}, columna ${this.currentToken.column}`);
+    throw new Error(formatDiagnostic({
+      message: msg,
+      location: {
+        filePath: this.currentToken.filePath,
+        line: this.currentToken.line,
+        column: this.currentToken.column,
+      },
+    }));
   }
 
   private matchToken(type: string, value?: string): boolean {
@@ -177,23 +206,58 @@ export class Parser {
   }
 
   public parseStatement(): StatementNode {
+    const location: SourceLocation = {
+      filePath: this.currentToken.filePath,
+      line: this.currentToken.line,
+      column: this.currentToken.column,
+    };
+    const statement = this.parseStatementInner();
+    statement.sourceLocation = location;
+    return statement;
+  }
+
+  private parseStatementInner(): StatementNode {
     if (this.currentToken.value === '[') {
       this.advance();
-      // solo por compatibilidad host(), esperemos su decuso pronto
-      if (this.matchToken('KEYWORD', 'host')) return this.parseImportDecl();
-      // fromato actual, el correcto
-      if (this.matchToken('KEYWORD', 'import')) return this.parseImportDecl();
-
+      if (this.matchToken('KEYWORD', 'host') || this.matchToken('KEYWORD', 'import')) {
+        if (this._blockDepth !== 0) this.error('Los imports del host solo se permiten en el nivel superior');
+        return this.parseLegacyHostImportDecl();
+      }
       if (this.currentToken.type === 'IDENTIFIER') {
         const receiver = this.parseGoTypeName();
         this.expectToken('SYMBOL', ']');
         return this.parseMethodDef(receiver);
       }
 
-      this.error("Solo se admite [import(...)] y [host(...)] para interactuar con el host, o [Tipo] como atributo");
+      this.error('Se esperaba el nombre de un tipo para declarar un método');
 
     }
 
+    if (this.check('KEYWORD', 'import')) return this.parseImportStatement();
+    if (this.check('KEYWORD', 'export')) {
+      if (this._blockDepth !== 0) this.error("'export' solo se permite en el nivel superior");
+      this.advance();
+      if (this.check('KEYWORD', 'func')) {
+        const fn = this.parseFunctionDef();
+        fn.exported = true;
+        fn.exportName = fn.name;
+        return fn;
+      }
+      if (this.check('KEYWORD', 'var')) {
+        const declaration = this.parseVarDecl();
+        if (declaration.kind === 'multi_decl') this.error('No se exportan declaraciones múltiples');
+        declaration.exported = true;
+        declaration.exportName = declaration.name;
+        return declaration;
+      }
+      if (this.check('KEYWORD', 'type')) {
+        const declaration = this.parseTypeOrStructDef();
+        declaration.exported = true;
+        declaration.exportName = declaration.name;
+        return declaration;
+      }
+      this.error("Después de 'export' se esperaba 'func', 'var' o 'type'");
+    }
     if (this.currentToken.value === 'var') return this.parseVarDecl();
     if (this.currentToken.value === 'const') return this.parseConstDecl();
     if (this.currentToken.value === 'func') return this.parseFunctionDef();
@@ -265,13 +329,38 @@ export class Parser {
     return { kind: 'expression_stmt', expr };
   }
 
-  private parseImportDecl(): ImportDeclNode {
+  private parseImportStatement(): ImportDeclNode | ModuleImportNode {
+    if (this._blockDepth !== 0) this.error("'import' solo se permite en el nivel superior");
+    this.expectToken('KEYWORD', 'import');
+    if (this.matchToken('KEYWORD', 'host')) return this.parseHostImportDecl();
+    const importPath = this.expectToken('STRING');
+    this.expectToken('SYMBOL', ':');
+    this.expectToken('SYMBOL', ':');
+    const symbol = this.expectToken('IDENTIFIER');
+    this.matchToken('SYMBOL', ';');
+    return { kind: 'module_import', path: importPath, symbol };
+  }
+
+  private parseHostImportDecl(): ImportDeclNode {
+    this.expectToken('SYMBOL', '(');
+    const module = this.expectToken('STRING');
+    this.expectToken('SYMBOL', ',');
+    const field = this.expectToken('STRING');
+    this.expectToken('SYMBOL', ')');
+    return this.parseHostFunction(module, field);
+  }
+
+  private parseLegacyHostImportDecl(): ImportDeclNode {
     this.expectToken('SYMBOL', '(');
     const module = this.expectToken('STRING');
     this.expectToken('SYMBOL', ',');
     const field = this.expectToken('STRING');
     this.expectToken('SYMBOL', ')');
     this.expectToken('SYMBOL', ']');
+    return this.parseHostFunction(module, field);
+  }
+
+  private parseHostFunction(module: string, field: string): ImportDeclNode {
     this.expectToken('KEYWORD', 'func');
     const name = this.expectToken('IDENTIFIER');
 
@@ -671,10 +760,15 @@ export class Parser {
   private parseBlock(): StatementNode[] {
     this.expectToken('SYMBOL', '{');
     const statements: StatementNode[] = [];
-    while (this.currentToken.value !== '}' && this.currentToken.type !== 'EOF') {
-      statements.push(this.parseStatement());
+    this._blockDepth++;
+    try {
+      while (this.currentToken.value !== '}' && this.currentToken.type !== 'EOF') {
+        statements.push(this.parseStatement());
+      }
+      this.expectToken('SYMBOL', '}');
+    } finally {
+      this._blockDepth--;
     }
-    this.expectToken('SYMBOL', '}');
     return statements;
   }
 

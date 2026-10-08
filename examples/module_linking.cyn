@@ -1,0 +1,17 @@
+@include("lib/std.cyn")
+
+import "lib/arithmetic.cyn"::add_and_double
+
+export func linked_value(value int) int {
+    return add_and_double(value, 11)
+}
+
+func main() {
+    assert(add_and_double(10, 11) == 42)
+    assert(linked_value(10) == 42)
+    var linked_function = add_and_double
+    assert(linked_function(10, 11) == 42)
+    println("module linking TODO OK")
+}
+
+main()

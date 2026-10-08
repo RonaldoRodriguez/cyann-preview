@@ -1,6 +1,7 @@
 import { FunctionIRBuilder, ModuleBuilder } from './compiler';
 import type { AnalyzedProgram } from './semantic';
 import { Optimizer } from './optimizer';
+import { formatDiagnostic } from './diagnostics';
 import {
   MathType, MathNode, BooleanLiteralNode, CallNode,
   FunctionRefNode, ArithmeticType, StructType,
@@ -1079,7 +1080,28 @@ export class CodeGenerator {
     let slot = 0;
     for (const name of functionRefs) this.modular.addFunctionToTable(name, slot++);
 
-    for (const s of stmts) if (s.kind === 'function_def') this.compileFunction(s as FunctionDefNode);
+    const exportNameCounts = new Map<string, number>();
+    for (const stmt of stmts) {
+      if (stmt.kind !== 'function_def') continue;
+      const fn = stmt as FunctionDefNode;
+      if (fn.wasmExport) {
+        const name = fn.wasmExportName ?? fn.exportName ?? fn.name;
+        exportNameCounts.set(name, (exportNameCounts.get(name) ?? 0) + 1);
+      }
+    }
+
+    for (const s of stmts) {
+      if (s.kind !== 'function_def') continue;
+      const fn = s as FunctionDefNode;
+      this.compileFunction(fn);
+      if (fn.wasmExport) {
+        const publicName = fn.wasmExportName ?? fn.exportName ?? fn.name;
+        const exportName = exportNameCounts.get(publicName) === 1
+          ? publicName
+          : `${publicName}$${fn.name}`;
+        this.modular.addExport(exportName, 'function', fn.name);
+      }
+    }
 
     this.startBuilder = new FunctionIRBuilder([], [], [], this.modular);
 
@@ -1413,6 +1435,22 @@ export class CodeGenerator {
   }
 
   public compileStatement(stmt: StatementNode, b: FunctionIRBuilder, topLevel = false): void {
+    try {
+      this.compileStatementContents(stmt, b, topLevel);
+    } catch (error) {
+      const location = stmt.sourceLocation;
+      if (!(error instanceof Error) || !location) throw error;
+      const existingPrefix = `${location.filePath}:${location.line}:${location.column}: error:`;
+      if (error.message.includes(existingPrefix)) throw error;
+      throw new Error(formatDiagnostic({ message: error.message, location }));
+    }
+  }
+
+  private compileStatementContents(
+    stmt: StatementNode,
+    b: FunctionIRBuilder,
+    topLevel: boolean,
+  ): void {
     const ec = new ExpressionCompiler(
       b, this.modular, this.envFunctions, this.zeroCaptureClosures
     );
@@ -1420,6 +1458,7 @@ export class CodeGenerator {
     switch (stmt.kind) {
       case 'function_def': this.compileFunction(stmt as FunctionDefNode); break;
       case 'import_decl':
+      case 'module_import':
       case 'struct_def':
       case 'type_alias':
         break;
@@ -1441,6 +1480,9 @@ export class CodeGenerator {
             deferred = true;
           }
           this.modular.addGlobal(v.name, wt, true, init);
+          if (v.wasmExport) {
+            this.modular.addExport(v.wasmExportName ?? v.exportName ?? v.name, 'global', v.name);
+          }
           if (deferred) {
             const t = ec.compile(v.initExpr!);
             if (t === 'void') throw new Error(`Global '${v.name}' inicializada con void`);

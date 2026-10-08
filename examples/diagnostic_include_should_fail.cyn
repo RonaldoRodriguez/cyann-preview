@@ -1,0 +1,6 @@
+// expect-diagnostic: examples/lib/diagnostic_error.cyn:4
+@include("lib/diagnostic_error.cyn")
+
+func main() {}
+
+main()

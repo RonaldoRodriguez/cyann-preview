@@ -1,0 +1,5 @@
+// Included fixture: the type mismatch deliberately belongs to this file.
+
+func included_type_error() {
+    var invalid int = "this is not an int"
+}

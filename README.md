@@ -239,20 +239,45 @@ func sum_squares(n int) int {
 
 El análisis semántico incluye comprobaciones de escape para evitar que una referencia a memoria de una región sobreviva al ámbito que la administra.
 
-### Includes e imports del host
+### Includes e módulos
 
 `@include("ruta")` expande otro archivo antes del análisis. La ruta se resuelve respecto al archivo que contiene la directiva; los includes repetidos se procesan una sola vez y los ciclos producen un error.
 
-`@include` es la forma actual de compartir código entre archivos; no es un sistema de módulos. Cyann todavía no tiene imports/exports de módulos del lenguaje.
-
-Las funciones externas se declaran con `[host("módulo", "nombre")]`:
+Los módulos Cyann pueden importar una función exportada desde una ruta relativa al archivo importador. La función se enlaza dentro del mismo binario y su firma se toma de la definición exportada:
 
 ```cyann
-[host("wasi_snapshot_preview1", "fd_write")]
+import "lib/math.cyn"::max
+
+func main() {
+    println(max(20, 22))
+}
+```
+
+En `lib/math.cyn`, el símbolo se hace público con `export`:
+
+```cyann
+export func max(a int, b int) int {
+    if a > b { return a }
+    return b
+}
+```
+
+Los módulos se cargan una vez por ruta. Cada módulo recibe un espacio de nombres interno para sus funciones, globals y tipos; las dependencias solo son visibles en el módulo importador mediante el import explícito. Se pueden exportar e importar funciones, tipos y variables globales; también se pueden importar funciones sobrecargadas, y Semantic elige la sobrecarga a partir de la firma exportada. Los ciclos de importación, los nombres duplicados y las referencias a símbolos privados o no importados producen errores.
+
+Los imports solo se permiten en el nivel superior. Las funciones y variables globales exportadas se publican en WebAssembly; los tipos son símbolos de compilación y no generan exports binarios. Los exports del módulo de entrada conservan su nombre en WebAssembly; los exports de módulos dependientes se publican con un nombre calificado por ruta, como `lib/math.cyn::max`, para evitar colisiones. Los `@include` se expanden por módulo y sus declaraciones quedan dentro del espacio de nombres de ese módulo.
+
+La prueba ejecutable [`module_linking.cyn`](examples/module_linking.cyn) enlaza funciones transitivas con nombres privados, globals, tipos e includes repetidos; [`module_type_global_exports.cyn`](examples/module_type_global_exports.cyn) prueba la importación de un alias, un struct y una variable global exportados; [`module_overload_import.cyn`](examples/module_overload_import.cyn) comprueba la selección de una sobrecarga importada. [`module_private_function_should_fail.cyn`](examples/module_private_function_should_fail.cyn), [`module_unimported_symbol_should_fail.cyn`](examples/module_unimported_symbol_should_fail.cyn), [`module_non_exported_symbol_should_fail.cyn`](examples/module_non_exported_symbol_should_fail.cyn), [`module_duplicate_import_should_fail.cyn`](examples/module_duplicate_import_should_fail.cyn), [`module_cycle_should_fail.cyn`](examples/module_cycle_should_fail.cyn) y [`module_nested_import_should_fail.cyn`](examples/module_nested_import_should_fail.cyn) comprueban errores de visibilidad, colisiones y estructura.
+
+Los imports del host usan una declaración explícita con la firma completa:
+
+```cyann
+import host("wasi_snapshot_preview1", "fd_write")
 func host_write(fd int, iovs int, count int, written int) int
 ```
 
-El módulo WebAssembly resultante debe ejecutarse en un host que proporcione ese import. La biblioteca de impresión de los ejemplos usa WASI de esta manera.
+El nombre local (`host_write`) puede diferir del campo externo (`fd_write`). El módulo WebAssembly debe ejecutarse en un host que proporcione el import indicado. La biblioteca de impresión de los ejemplos usa WASI de esta manera.
+
+La forma anterior `[host("módulo", "nombre")] func ...` se acepta temporalmente para facilitar la migración, pero la sintaxis `import host(...)` es la forma recomendada.
 
 ### Biblioteca estándar de ejemplo
 
@@ -290,6 +315,8 @@ wasmtime output.wasm
 ```
 
 `src/run.ts` compila y ejecuta si no se especifica una salida. Para ejecutar, intenta cargar WASI desde Bun y luego desde `node:wasi`; si ninguna opción está disponible, compila a `.wasm` y usa un runtime externo como Wasmtime. Si se indica un archivo de salida, solo escribe el WebAssembly.
+
+Los errores de parser y análisis semántico muestran `archivo:línea:columna`. El preprocesador conserva el origen de cada fragmento de `@include`, así que la ubicación señala el archivo original, no la línea virtual del texto expandido. Los ejemplos `diagnostic_*_should_fail.cyn` hacen aserciones ejecutables sobre esas ubicaciones.
 
 ### Comprobaciones del proyecto
 
@@ -358,6 +385,18 @@ Cada archivo ejecutable de `examples/` tiene un foco concreto; `todo_demo.cyn` c
 ### Preprocesador, runtime e integración
 
 - [`preprocessor.cyn`](examples/preprocessor.cyn): expansión idempotente de includes repetidos.
+- [`module_linking.cyn`](examples/module_linking.cyn): importación de una función Cyann, enlace en un solo binario y ejecución.
+- [`module_overload_import.cyn`](examples/module_overload_import.cyn): resolución semántica de overloads importados.
+- [`module_type_global_exports.cyn`](examples/module_type_global_exports.cyn): importación de tipos y globals exportados.
+- [`module_private_function_should_fail.cyn`](examples/module_private_function_should_fail.cyn): rechazo del uso directo de una función privada del módulo.
+- [`module_non_exported_symbol_should_fail.cyn`](examples/module_non_exported_symbol_should_fail.cyn): rechazo de imports cuyo símbolo no está exportado.
+- [`module_duplicate_import_should_fail.cyn`](examples/module_duplicate_import_should_fail.cyn): rechazo de dos imports que colisionan en el mismo nombre local.
+- [`module_unimported_symbol_should_fail.cyn`](examples/module_unimported_symbol_should_fail.cyn): rechazo del uso de un símbolo exportado transitivo que el módulo no importó directamente.
+- [`module_cycle_should_fail.cyn`](examples/module_cycle_should_fail.cyn): rechazo de dependencias cíclicas.
+- [`module_nested_import_should_fail.cyn`](examples/module_nested_import_should_fail.cyn): rechazo de imports fuera del nivel superior.
+- [`diagnostic_include_should_fail.cyn`](examples/diagnostic_include_should_fail.cyn): error semántico intencional en un include; el diagnóstico debe señalar el archivo incluido y su línea 4.
+- [`diagnostic_parse_include_should_fail.cyn`](examples/diagnostic_parse_include_should_fail.cyn): error de sintaxis intencional en un include; el parser debe señalar el archivo incluido y su línea 3.
+- [`diagnostic_entry_should_fail.cyn`](examples/diagnostic_entry_should_fail.cyn): error semántico en el archivo de entrada; el diagnóstico debe señalar su línea 3.
 - [`std_library.cyn`](examples/std_library.cyn): comprobaciones de la biblioteca `std.cyn` y de límites de enteros `s32`.
 - [`type.cyn`](examples/type.cyn): salida y utilidades del runtime que dependen de WASI.
 - [`todo_demo.cyn`](examples/todo_demo.cyn): integración de structs, arrays, memoria, regiones, closures, callbacks y otras características.

@@ -1,0 +1,7 @@
+export func convert(value int) int {
+    return value + 1
+}
+
+export func convert(value f64) f64 {
+    return value + 0.5
+}

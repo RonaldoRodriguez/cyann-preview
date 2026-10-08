@@ -1,0 +1,7 @@
+import "lib/arithmetic.cyn"::add_and_double
+
+func main() {
+    add_values(10, 11)
+}
+
+main()

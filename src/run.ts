@@ -6,12 +6,10 @@
 // implementar `println`, así que al ejecutar directo necesitamos proveer WASI.
 // Si la instancia no está disponible, delegamos a wasmtime.
 
-import { Lexer } from './lexer';
-import { Parser } from './parser';
 import { Optimizer } from './optimizer';
 import { SemanticAnalyzer } from './semantic';
 import { CodeGenerator } from './codegen';
-import { preprocess } from './preprocessor';
+import { ModuleLoader } from './moduleLoader';
 import * as path from 'node:path';
 
 type WasiModule = typeof import('node:wasi');
@@ -25,10 +23,7 @@ type WasiRuntime = InstanceType<WasiModule['WASI']> & {
 type WasiConstructor = new (options: WasiOptions) => WasiRuntime;
 
 async function compile(inputPath: string): Promise<Uint8Array> {
-  const raw      = await Bun.file(inputPath).text();
-  const basePath = path.dirname(path.resolve(inputPath));
-  const source   = await preprocess(raw, basePath);
-  const ast = new Parser(new Lexer(source)).parseProgram();
+  const ast = await new ModuleLoader().load(inputPath);
   const analyzed = new SemanticAnalyzer().analyzeProgram(ast);
   const optimized = new Optimizer().optimizeProgram(analyzed);
   return new CodeGenerator(optimized).build();

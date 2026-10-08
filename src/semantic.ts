@@ -6,6 +6,8 @@ import {
   MakeArrayNode, CallNode, StructAccessNode, SizeOfNode,
 } from './types';
 import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
+import { SourceLocation } from './sourceMap';
+import { Diagnostic, formatDiagnosticList } from './diagnostics';
 import {
   TypeRegistry, computeStructLayout,
   typesEqual as areTypesEqual, describeType,
@@ -21,17 +23,17 @@ export interface AnalyzedProgram extends ProgramNode {
 
 // ─── Acumulador de diagnósticos ───────────────────────────────────────────
 class DiagnosticBag {
-  private errors: string[] = [];
+  private errors: Diagnostic[] = [];
 
-  error(msg: string): void {
-    this.errors.push(msg);
+  error(msg: string, location?: SourceLocation): void {
+    this.errors.push({ message: msg, location });
   }
 
   hasErrors(): boolean {
     return this.errors.length > 0;
   }
 
-  getErrors(): string[] {
+  getErrors(): Diagnostic[] {
     return [...this.errors];
   }
 }
@@ -147,9 +149,10 @@ export class SemanticAnalyzer {
   private syntheticCounter = 0;
 
   private diagnostics = new DiagnosticBag();
+  private currentLocation?: SourceLocation;
 
   private error(msg: string): void {
-    this.diagnostics.error(msg);
+    this.diagnostics.error(msg, this.currentLocation);
   }
 
   constructor() {
@@ -412,6 +415,7 @@ export class SemanticAnalyzer {
     this.capturedNamesStack = [];
     this.methodsByStruct.clear();
     this.diagnostics = new DiagnosticBag();
+    this.currentLocation = undefined;
 
     this.typeAliases.clear();
     this.collectTypeAliases(program.body);
@@ -425,10 +429,7 @@ export class SemanticAnalyzer {
 
     if (this.diagnostics.hasErrors()) {
       const errs = this.diagnostics.getErrors();
-      throw new Error(
-        `Se encontraron ${errs.length} error${errs.length === 1 ? '' : 'es'}:\n` +
-        errs.map((e, i) => `  ${i + 1}. ${e}`).join('\n')
-      );
+      throw new Error(formatDiagnosticList(errs));
     }
     return Object.assign(program, { [analyzedProgramBrand]: true as const });
   }
@@ -444,59 +445,63 @@ export class SemanticAnalyzer {
     for (const s of stmts) {
       if (s.kind !== 'struct_def') continue;
 
-      this.typeRegistry.registerStruct(
-        s.name,
-        s.fields.map(f => {
-          const regName = this.registryTypeName(f.type);
-          if (typeof f.type === 'object' && f.type.kind === 'function') {
-            return { name: f.name, type: regName, mathType: f.type };
-          }
-          return { name: f.name, type: regName };
-        })
-      );
-      const structType = this.structTypeFromRegistry(s.name);
-      this.scopeControl.declare(s.name, structType, false, true);
+      this.withLocation(s, () => {
+        this.typeRegistry.registerStruct(
+          s.name,
+          s.fields.map(f => {
+            const regName = this.registryTypeName(f.type);
+            if (typeof f.type === 'object' && f.type.kind === 'function') {
+              return { name: f.name, type: regName, mathType: f.type };
+            }
+            return { name: f.name, type: regName };
+          })
+        );
+        const structType = this.structTypeFromRegistry(s.name);
+        this.scopeControl.declare(s.name, structType, false, true);
+      });
     }
   }
 
   private collectFunctions(stmts: StatementNode[]): void {
     for (const s of stmts) {
       if (s.kind !== 'function_def') continue;
-      const fn = s as FunctionDefNode;
+      this.withLocation(s, () => {
+        const fn = s as FunctionDefNode;
 
-      let receiverType: StructType | null = null;
-      if (fn.receiver) {
-        const rt = this.resolveType(fn.receiver);
-        if (typeof rt !== 'object' || rt.kind !== 'struct') {
-          this.error(
-            `Receiver de '${fn.name}' debe ser un struct, se obtuvo ${this.typeName(rt)}`
-          );
-          continue;
+        let receiverType: StructType | null = null;
+        if (fn.receiver) {
+          const rt = this.resolveType(fn.receiver);
+          if (typeof rt !== 'object' || rt.kind !== 'struct') {
+            this.error(
+              `Receiver de '${fn.name}' debe ser un struct, se obtuvo ${this.typeName(rt)}`
+            );
+            return;
+          }
+          if (rt.name === '') {
+            this.error(`Receiver de '${fn.name}' no puede ser un struct anónimo`);
+            return;
+          }
+          receiverType = rt;
         }
-        if (rt.name === '') {
-          this.error(`Receiver de '${fn.name}' no puede ser un struct anónimo`);
-          continue;
+
+        const userParamTypes = fn.params.map(p => this.resolveType(p.type));
+        const allParamTypes = receiverType
+          ? [receiverType, ...userParamTypes]
+          : userParamTypes;
+        const returnTypes = fn.returnTypes.map(t => this.resolveType(t));
+        const fnType: FunctionType = {
+          kind: 'function',
+          paramTypes: allParamTypes,
+          returnTypes,
+        };
+        const mangledName = mangleFunctionName(fn.name, allParamTypes);
+
+        if (receiverType) {
+          this.registerMethod(receiverType.name, fn.name, mangledName, fnType);
         }
-        receiverType = rt;
-      }
 
-      const userParamTypes = fn.params.map(p => this.resolveType(p.type));
-      const allParamTypes = receiverType
-        ? [receiverType, ...userParamTypes]
-        : userParamTypes;
-      const returnTypes = fn.returnTypes.map(t => this.resolveType(t));
-      const fnType: FunctionType = {
-        kind: 'function',
-        paramTypes: allParamTypes,
-        returnTypes,
-      };
-      const mangledName = mangleFunctionName(fn.name, allParamTypes);
-
-      if (receiverType) {
-        this.registerMethod(receiverType.name, fn.name, mangledName, fnType);
-      }
-
-      this.scopeControl.declareFunction(fn.name, mangledName, fnType, true);
+        this.scopeControl.declareFunction(fn.name, mangledName, fnType, true);
+      });
     }
   }
 
@@ -522,6 +527,20 @@ export class SemanticAnalyzer {
   }
 
   public analyzeStatement(stmt: StatementNode): void {
+    this.withLocation(stmt, () => this.analyzeStatementAtLocation(stmt));
+  }
+
+  private withLocation<T>(stmt: StatementNode, action: () => T): T {
+    const previousLocation = this.currentLocation;
+    this.currentLocation = stmt.sourceLocation ?? previousLocation;
+    try {
+      return action();
+    } finally {
+      this.currentLocation = previousLocation;
+    }
+  }
+
+  private analyzeStatementAtLocation(stmt: StatementNode): void {
     switch (stmt.kind) {
 
       case 'import_decl': {
@@ -534,6 +553,9 @@ export class SemanticAnalyzer {
         this.scopeControl.declareFunction(id.name, id.name, fnType, true);
         break;
       }
+
+      case 'module_import':
+        break;
 
       case 'const_decl':
       case 'var_decl': {

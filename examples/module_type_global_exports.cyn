@@ -1,0 +1,22 @@
+@include("lib/std.cyn")
+
+import "lib/public_api.cyn"::Score
+import "lib/public_api.cyn"::Point
+import "lib/public_api.cyn"::shared_count
+import "lib/public_api.cyn"::next_score
+import "lib/public_api.cyn"::make_point
+
+func main() {
+    var score Score = next_score()
+    assert(score == 1)
+    assert(shared_count == 1)
+    shared_count = 10
+    assert(next_score() == 11)
+
+    var point Point = make_point(4, 9)
+    assert(point.x == 4)
+    assert(point.y == 9)
+    println("type/global exports TODO OK")
+}
+
+main()

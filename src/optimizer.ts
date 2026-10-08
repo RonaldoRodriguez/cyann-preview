@@ -86,6 +86,7 @@ export class Optimizer {
       case 'break':
       case 'continue':
       case 'import_decl':
+      case 'module_import':
       case 'struct_def':
       case 'type_alias':
         return stmt;

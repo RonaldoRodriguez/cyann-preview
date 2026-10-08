@@ -1,0 +1,7 @@
+import "lib/arithmetic.cyn"::add_and_double
+
+func main() {
+    double_value(21)
+}
+
+main()

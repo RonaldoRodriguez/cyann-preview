@@ -1,0 +1,6 @@
+// expect-diagnostic: examples/diagnostic_entry_should_fail.cyn:3
+func main() {
+    var invalid int = "this is not an int"
+}
+
+main()

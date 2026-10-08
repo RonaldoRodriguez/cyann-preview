@@ -1,0 +1,5 @@
+import "cycle_a.cyn"::cycle_a
+
+export func cycle_b() int {
+    return cycle_a()
+}

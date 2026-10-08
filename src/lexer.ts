@@ -1,3 +1,5 @@
+import { SourceLocation, SourceMap } from './sourceMap';
+
 export type TokenType =
   | 'KEYWORD' | 'IDENTIFIER' | 'NUMBER' | 'STRING'
   | 'BOOLEAN' | 'SYMBOL' | 'EOF';
@@ -7,6 +9,7 @@ export interface Token {
   value: string;
   line: number;
   column: number;
+  filePath: string;
 }
 
 export class Lexer {
@@ -15,7 +18,16 @@ export class Lexer {
   private line = 1;
   private column = 1;
 
-  constructor(source: string) { this.source = source; }
+  constructor(source: string, private readonly sourceMap?: SourceMap) { this.source = source; }
+
+  private token(type: TokenType, value: string, index: number, line: number, column: number): Token {
+    const location: SourceLocation = this.sourceMap?.locationAt(index) ?? {
+      filePath: '<source>',
+      line,
+      column,
+    };
+    return { type, value, ...location };
+  }
 
   public getPosition() { return { line: this.line, column: this.column, index: this.index }; }
 
@@ -53,8 +65,11 @@ export class Lexer {
 
   public nextToken(): Token {
     this.skipTrivia();
-    if (this.isEOF()) return { type: 'EOF', value: '', line: this.line, column: this.column };
+    if (this.isEOF()) {
+      return this.token('EOF', '', this.index, this.line, this.column);
+    }
 
+    const startIndex = this.index;
     const startLine = this.line, startColumn = this.column;
     const ch = this.peekChar();
 
@@ -76,7 +91,7 @@ export class Lexer {
         } else val += this.nextChar();
       }
       if (this.peekChar() === quote) this.nextChar();
-      return { type: 'STRING', value: val, line: startLine, column: startColumn };
+      return this.token('STRING', val, startIndex, startLine, startColumn);
     }
 
     // Números
@@ -87,14 +102,14 @@ export class Lexer {
     if (/\d/.test(ch)) {
       let raw = this.nextChar();
       while (!this.isEOF() && /[0-9a-fA-F._xXbBuUlLfL]/.test(this.peekChar())) raw += this.nextChar();
-      return { type: 'NUMBER', value: raw, line: startLine, column: startColumn };
+      return this.token('NUMBER', raw, startIndex, startLine, startColumn);
     }
 
     // Identificadores / keywords
     if (/[a-zA-Z_$]/.test(ch)) {
       let id = '';
       while (!this.isEOF() && /[a-zA-Z0-9_$]/.test(this.peekChar())) id += this.nextChar();
-      if (id === 'true' || id === 'false') return { type: 'BOOLEAN', value: id, line: startLine, column: startColumn };
+      if (id === 'true' || id === 'false') return this.token('BOOLEAN', id, startIndex, startLine, startColumn);
 
       // ── Lista reducida: solo lo que el parser realmente consume.
       const keywords = [
@@ -102,11 +117,11 @@ export class Lexer {
         'if', 'else', 'switch', 'case', 'default',
         'for', 'in', 'break', 'continue', 'return',
         'as', 'make', 'null', 'host', 'region',
-        'import', 'size_of'
+        'import', 'export', 'size_of'
 
       ];
-      if (keywords.includes(id)) return { type: 'KEYWORD', value: id, line: startLine, column: startColumn };
-      return { type: 'IDENTIFIER', value: id, line: startLine, column: startColumn };
+      if (keywords.includes(id)) return this.token('KEYWORD', id, startIndex, startLine, startColumn);
+      return this.token('IDENTIFIER', id, startIndex, startLine, startColumn);
     }
 
     // Símbolos multi-carácter
@@ -114,15 +129,15 @@ export class Lexer {
     const doubleOps = ['==', '!=', '<=', '>=', '&&', '||', '<<', '>>', '->', ':='];
     if (doubleOps.includes(twoChar)) {
       this.nextChar(); this.nextChar();
-      return { type: 'SYMBOL', value: twoChar, line: startLine, column: startColumn };
+      return this.token('SYMBOL', twoChar, startIndex, startLine, startColumn);
     }
     for (const op of ['++', '--']) {
       if (this.source.startsWith(op, this.index)) {
         this.nextChar(); this.nextChar();
-        return { type: 'SYMBOL', value: op, line: startLine, column: startColumn };
+        return this.token('SYMBOL', op, startIndex, startLine, startColumn);
       }
     }
 
-    return { type: 'SYMBOL', value: this.nextChar(), line: startLine, column: startColumn };
+    return this.token('SYMBOL', this.nextChar(), startIndex, startLine, startColumn);
   }
 }

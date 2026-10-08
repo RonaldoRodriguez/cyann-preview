@@ -61,11 +61,32 @@ foreach ($f in $files) {
 
   # ── Caso negativo: debe FALLAR la compilación ────────────────
   if (Test-IsNegative $name) {
-    $null = bun src/run.ts $src $wasm 2>&1
+    $compOut = bun src/run.ts $src $wasm 2>&1
     if ($LASTEXITCODE -ne 0) {
-      Write-Host "  OK  rechazado en compilación (correcto)" -ForegroundColor Green
-      $pass++
-      $results += [pscustomobject]@{ File = $name; Result = 'ok';   Note = 'rejected' }
+      $expectation = Get-Content -Path $src -TotalCount 1
+      if ($expectation -match '^// expect-diagnostic: (.+):(\d+)$') {
+        $expectedLocationPath = $Matches[1] -replace '\\', '/'
+        $expectedPath = [regex]::Escape($expectedLocationPath)
+        $expectedLine = $Matches[2]
+        $diagnosticOutput = ($compOut | Out-String) -replace '\\', '/'
+        $expectedDiagnostic = "${expectedPath}:${expectedLine}:\d+:"
+        if ($diagnosticOutput -match $expectedDiagnostic) {
+          Write-Host "  OK  rechazado en la ubicación esperada (${expectedLocationPath}:$expectedLine)" -ForegroundColor Green
+          $pass++
+          $results += [pscustomobject]@{ File = $name; Result = 'ok'; Note = 'diagnostic location matched' }
+        } else {
+          Write-Host "  XX  error rechazado, pero la ubicación no coincide; se esperaba ${expectedLocationPath}:$expectedLine" -ForegroundColor Red
+          $compOut | Select-Object -First 5 | ForEach-Object {
+            Write-Host "      $_" -ForegroundColor DarkRed
+          }
+          $fail++
+          $results += [pscustomobject]@{ File = $name; Result = 'FAIL'; Note = 'diagnostic location mismatch' }
+        }
+      } else {
+        Write-Host "  OK  rechazado en compilación (correcto)" -ForegroundColor Green
+        $pass++
+        $results += [pscustomobject]@{ File = $name; Result = 'ok'; Note = 'rejected' }
+      }
     } else {
       Write-Host "  XX  compiló sin error (se esperaba rechazo)" -ForegroundColor Red
       $fail++

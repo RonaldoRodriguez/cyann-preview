@@ -1,0 +1,18 @@
+@include("std.cyn")
+
+type LocalBox struct {
+    value int
+}
+
+var hidden_counter int = 0
+
+func local_helper(value int) int {
+    hidden_counter++
+    var box LocalBox = LocalBox{value: value}
+    return box.value + 2
+}
+
+export func double_value(value int) int {
+    hidden_counter++
+    return local_helper(value * 2) - 2
+}

@@ -19,10 +19,10 @@
 // Nosotros usamos una sola entrada, así que reservamos 8 bytes
 // una vez y la reutilizamos para cada escritura.
 
-[host("wasi_snapshot_preview1", "fd_write")]
+import host("wasi_snapshot_preview1", "fd_write")
 func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
 
-[host("wasi_snapshot_preview1", "proc_exit")]
+import host("wasi_snapshot_preview1", "proc_exit")
 func _wasi_proc_exit(rval int)
 
 // ─── Buffers de scratch ─────────────────────────────────────────
