@@ -11,8 +11,8 @@ export const signedness: Record<ArithmeticType, 'signed' | 'unsigned' | 'float'>
   u64: 'unsigned',
   f32: 'float',
   f64: 'float',
-};
-
+};// Tipo semántico no soportado
+// maxArithmeticType: se esperaban tipos aritméticos, se recibió 
 export const width: Record<ArithmeticType, number> = {
   s32: 32,
   u32: 32,
@@ -34,7 +34,7 @@ export const arithInfo: Record<ArithmeticType, { signed: boolean; isFloat: boole
 export function maxArithmeticType(a: ArithmeticType, b: ArithmeticType): ArithmeticType {
   if (!arithInfo[a] || !arithInfo[b]) {
     throw new Error(
-      `maxArithmeticType: se esperaban tipos aritméticos, se recibió (${String(a)}, ${String(b)})`
+      `Se esperaban tipos aritméticos, se recibió (${String(a)}, ${String(b)})`
     );
   }
 
@@ -52,7 +52,7 @@ export function maxArithmeticType(a: ArithmeticType, b: ArithmeticType): Arithme
 
   return resultWidth === 32 ? (resultSigned ? 's32' : 'u32') : (resultSigned ? 's64' : 'u64');
 }
-
+// Global no definida
 export function sizeOfType(t: MathType): number {
   if (t === 'null') return 4;
   if (t === 'tuple') return 4;
@@ -172,6 +172,9 @@ export function semanticToWasmType(semType: MathType): 'i32' | 'i64' | 'f32' | '
     case 'f64':
       return 'f64';
     default:
-      throw new Error(`Tipo semántico no soportado: ${semType}`);
+      throw new Error(`Tipo semántico no soportado: ${typeof semType === 'string' ? semType : typeof semType as MathType
+}`);
   }
 }
+
+// Tipo no registrado

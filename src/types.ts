@@ -46,6 +46,7 @@ export interface FunctionType {
   returnTypes: MathType[];
 }
 
+
 export type MathType = ArithmeticType | 'string' | 'bool' | 'null' | 'tuple' | ArrayType | DynArrayType | PointerType | StructType | FunctionType;
 
 // ─────────────────────────────────────────────
@@ -207,6 +208,15 @@ export type PatternNode =
   | { kind: 'bool'; value: boolean }
   | { kind: 'struct'; structName: string; fields: { name: string; pattern: PatternNode }[] };
 
+export interface SizeOfNode {
+  kind: 'size_of';
+  targetType?: MathType;
+  expr?: MathNode;
+  identName?: string;
+  value?: number;
+  type: MathType;
+}
+
 export type MathNode =
   | ConstNode
   | VariableNode
@@ -226,7 +236,8 @@ export type MathNode =
   | IncrementNode
   | FunctionLiteralNode
   | ClosureNode
-  | CaptureAccessNode;
+  | CaptureAccessNode
+  | SizeOfNode;
 
 // ─────────────────────────────────────────────
 // TypeRegistry
@@ -447,7 +458,7 @@ export class TypeRegistry {
   getSize(name: string): number {
     return this.getType(name).size;
   }
-
+// Global no definida
   getAlign(name: string): number {
     return this.getType(name).align;
   }
@@ -460,3 +471,5 @@ export class TypeRegistry {
     return result;
   }
 }
+
+// Tipo no registrado

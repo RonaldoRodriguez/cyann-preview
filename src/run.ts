@@ -12,13 +12,12 @@ import { Optimizer } from './optimizer';
 import { SemanticAnalyzer } from './semantic';
 import { CodeGenerator } from './codegen';
 import { preprocess } from './preprocessor';
-import * as path from 'path';
+import * as path from 'node:path';
 
 async function compile(inputPath: string): Promise<Uint8Array> {
   const raw      = await Bun.file(inputPath).text();
   const basePath = path.dirname(path.resolve(inputPath));
   const source   = await preprocess(raw, basePath);
-
   const ast = new Parser(new Lexer(source)).parseProgram();
   new SemanticAnalyzer().analyzeProgram(ast);
   const opt = new Optimizer().optimizeProgram(ast);

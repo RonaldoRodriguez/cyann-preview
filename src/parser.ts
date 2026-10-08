@@ -2,7 +2,7 @@ import { Lexer, Token } from './lexer';
 import { createConstNode } from './constants';
 import {
   MathNode, MathType, CallNode, StructLiteralNode, CallIndirectNode,
-  PatternNode, MakeArrayNode,
+  PatternNode, MakeArrayNode, SizeOfNode,
 } from './types';
 
 // ─── Nodos ────────────────────────────────────────────────────────────────
@@ -94,9 +94,9 @@ export interface SwitchNode {
 }
 
 export interface RegionNode { kind: 'region'; body: StatementNode[]; }
-export interface BreakNode    { kind: 'break'; label?: string; }
+export interface BreakNode { kind: 'break'; label?: string; }
 export interface ContinueNode { kind: 'continue'; label?: string; }
-export interface ReturnNode   { kind: 'return'; values: MathNode[]; }
+export interface ReturnNode { kind: 'return'; values: MathNode[]; }
 export interface ExpressionStmtNode { kind: 'expression_stmt'; expr: MathNode; }
 
 export interface ImportDeclNode {
@@ -137,7 +137,7 @@ export class Parser {
   }
 
   private error(msg: string): never {
-    throw new Error(`${msg} en línea ${this.currentToken.line}, columna ${this.currentToken.column}`);
+    throw new Error(`${msg} en la línea ${this.currentToken.line}, columna ${this.currentToken.column}`);
   }
 
   private matchToken(type: string, value?: string): boolean {
@@ -190,24 +190,25 @@ export class Parser {
         return this.parseMethodDef(receiver);
       }
 
-      this.error("Solo se admite [import(...)] o [host(...)] para interactuar con el host, o [Tipo] como atributo");
+      this.error("Solo se admite [import(...)] y [host(...)] para interactuar con el host, o [Tipo] como atributo");
+
     }
 
-    if (this.currentToken.value === 'var')    return this.parseVarDecl();
-    if (this.currentToken.value === 'const')  return this.parseConstDecl();
-    if (this.currentToken.value === 'func')   return this.parseFunctionDef();
-    if (this.currentToken.value === 'type')   return this.parseTypeOrStructDef();
-    if (this.currentToken.value === 'if')     return this.parseIfStatement();
-    if (this.currentToken.value === 'for')    return this.parseForStatement();
+    if (this.currentToken.value === 'var') return this.parseVarDecl();
+    if (this.currentToken.value === 'const') return this.parseConstDecl();
+    if (this.currentToken.value === 'func') return this.parseFunctionDef();
+    if (this.currentToken.value === 'type') return this.parseTypeOrStructDef();
+    if (this.currentToken.value === 'if') return this.parseIfStatement();
+    if (this.currentToken.value === 'for') return this.parseForStatement();
     if (this.currentToken.value === 'switch') return this.parseSwitchStatement();
     if (this.currentToken.value === 'region') {
       this.advance();
       const body = this.parseBlock();
       return { kind: 'region', body };
     }
-    if (this.currentToken.value === 'break')    return this.parseBreakStatement();
+    if (this.currentToken.value === 'break') return this.parseBreakStatement();
     if (this.currentToken.value === 'continue') return this.parseContinueStatement();
-    if (this.currentToken.value === 'return')   return this.parseReturnStatement();
+    if (this.currentToken.value === 'return') return this.parseReturnStatement();
 
     if (this.currentToken.type === 'IDENTIFIER') {
       const name = this.currentToken.value;
@@ -277,7 +278,7 @@ export class Parser {
     this.expectToken('SYMBOL', '(');
     const params: { name: string; type: MathType }[] = [];
     if (this.currentToken.value !== ')') {
-      for (;;) {
+      for (; ;) {
         const pn = this.expectToken('IDENTIFIER');
         const pt = this.parseGoTypeName();
         params.push({ name: pn, type: pt });
@@ -336,7 +337,7 @@ export class Parser {
     if (this.matchToken('SYMBOL', '(')) {
       const types: MathType[] = [];
       if (this.currentToken.value !== ')') {
-        for (;;) {
+        for (; ;) {
           types.push(this.parseGoTypeName());
           if (!this.matchToken('SYMBOL', ',')) break;
         }
@@ -355,7 +356,7 @@ export class Parser {
     this.expectToken('SYMBOL', '(');
     const params: { name: string; type: MathType }[] = [];
     if (this.currentToken.value !== ')') {
-      for (;;) {
+      for (; ;) {
         const paramName = this.expectToken('IDENTIFIER');
         const paramType = this.parseGoTypeName();
         params.push({ name: paramName, type: paramType });
@@ -380,7 +381,7 @@ export class Parser {
     this.expectToken('SYMBOL', '(');
     const params: { name: string; type: MathType }[] = [];
     if (this.currentToken.value !== ')') {
-      for (;;) {
+      for (; ;) {
         const paramName = this.expectToken('IDENTIFIER');
         const paramType = this.parseGoTypeName();
         params.push({ name: paramName, type: paramType });
@@ -412,6 +413,7 @@ export class Parser {
         this.matchToken('SYMBOL', ';');
       }
       this.expectToken('SYMBOL', '}');
+      //console.log(fields)
       return { kind: 'struct_def', name, fields };
     }
 
@@ -432,7 +434,7 @@ export class Parser {
     return { kind: 'if', condition, thenBlock, elseBlock };
   }
 
- private parseForStatement(label: string | null = null): StatementNode {
+  private parseForStatement(label: string | null = null): StatementNode {
     this.expectToken('KEYWORD', 'for');
 
     if (this.checkValue('{')) {
@@ -525,7 +527,7 @@ export class Parser {
 
       if (this.matchToken('KEYWORD', 'case')) {
         const patterns: PatternNode[] = [];
-        for (;;) {
+        for (; ;) {
           const pattern = this.parsePattern();
           patterns.push(pattern);
           if (this.matchToken('SYMBOL', ',')) continue;
@@ -657,7 +659,7 @@ export class Parser {
       this.currentToken.type !== 'EOF' &&
       this.currentToken.value !== ';'
     ) {
-      for (;;) {
+      for (; ;) {
         values.push(this.parseExpression());
         if (!this.matchToken('SYMBOL', ',')) break;
       }
@@ -763,6 +765,7 @@ export class Parser {
         case 'i64':
         case 'int64':
         case 'int64_t':type = 's64'; break;
+
         // u32
         case 'uint':
         case 'u32':
@@ -963,7 +966,7 @@ export class Parser {
     if (this.matchToken('SYMBOL', '[')) {
       const elements: MathNode[] = [];
       if (this.currentToken.value !== ']') {
-        for (;;) {
+        for (; ;) {
           elements.push(this.parseExpression());
           if (!this.matchToken('SYMBOL', ',')) break;
         }
@@ -977,6 +980,48 @@ export class Parser {
         type: { kind: 'array', elementType: firstType, length: elements.length },
       } as any;
     }
+    else if (this.matchToken('KEYWORD', 'size_of') || this.matchToken('IDENTIFIER', 'size_of')) {
+      const hasParen = this.matchToken('SYMBOL', '(');
+      const isPrimitiveType = [
+        'int', 'i32', 'int32', 'int32_t', 's32',
+        'long', 'i64', 'int64', 'int64_t', 's64',
+        'uint', 'u32', 'uint32', 'uint32_t',
+        'uint64', 'uint64_t', 'u64',
+        'float', 'f32', 'float64', 'double', 'f64',
+        'bool', 'string', 'byte', 'char', 'i8', 'u8',
+        'int8_t', 'uint8_t', 'i16', 'u16', 'int16_t', 'uint16_t',
+        'size_t', 'ssize_t', 'intptr_t', 'uintptr_t', 'usize', 'isize', 'uintptr',
+        'void'
+      ].includes(this.currentToken.value);
+
+      if (this.check('SYMBOL', '*') || isPrimitiveType ||
+          (this.check('SYMBOL', '[') && (this.peekNextToken().value === ']' || this.peekNextToken().type === 'NUMBER'))) {
+        const identName = (this.currentToken.type === 'IDENTIFIER' || this.currentToken.type === 'KEYWORD') ? this.currentToken.value : undefined;
+        const targetType = this.parseGoTypeName();
+        if (hasParen) this.expectToken('SYMBOL', ')');
+        node = { kind: 'size_of', targetType, identName, type: 's32' } as SizeOfNode;
+      } else if (this.currentToken.type === 'IDENTIFIER' && hasParen) {
+        const ident = this.currentToken.value;
+        const next = this.peekNextToken();
+        if (next.type === 'SYMBOL' && next.value === ')') {
+          this.advance();
+          this.expectToken('SYMBOL', ')');
+          node = { kind: 'size_of', identName: ident, type: 's32' } as SizeOfNode;
+        } else {
+          const expr = this.parseExpression();
+          this.expectToken('SYMBOL', ')');
+          node = { kind: 'size_of', expr, type: 's32' } as SizeOfNode;
+        }
+      } else if (hasParen) {
+        const expr = this.parseExpression();
+        this.expectToken('SYMBOL', ')');
+        node = { kind: 'size_of', expr, type: 's32' } as SizeOfNode;
+      } else {
+        const identName = (this.currentToken.type === 'IDENTIFIER' || this.currentToken.type === 'KEYWORD') ? this.currentToken.value : undefined;
+        const targetType = this.parseGoTypeName();
+        node = { kind: 'size_of', targetType, identName, type: 's32' } as SizeOfNode;
+      }
+    }
     else if (this.matchToken('KEYWORD', 'make')) {
       this.expectToken('SYMBOL', '(');
       const typeExpr = this.parseGoTypeName();
@@ -985,11 +1030,12 @@ export class Parser {
       this.expectToken('SYMBOL', ')');
       node = { kind: 'make_array', typeExpr, lengthExpr } as MakeArrayNode;
     }
+
     else if (this.matchToken('KEYWORD', 'func')) {
       this.expectToken('SYMBOL', '(');
       const params: { name: string; type: MathType }[] = [];
       if (this.currentToken.value !== ')') {
-        for (;;) {
+        for (; ;) {
           const pn = this.expectToken('IDENTIFIER');
           const pt = this.parseGoTypeName();
           params.push({ name: pn, type: pt });
@@ -1010,7 +1056,7 @@ export class Parser {
       this.expectToken('SYMBOL', '{');
       const fields: { name: string; value: MathNode }[] = [];
       if (this.currentToken.value !== '}') {
-        for (;;) {
+        for (; ;) {
           const fieldName = this.expectToken('IDENTIFIER');
           this.expectToken('SYMBOL', ':');
           const value = this.parseExpression();
@@ -1039,14 +1085,15 @@ export class Parser {
         this._noStructLiteral = savedNoStruct;
       }
       this.expectToken('SYMBOL', ')');
-      if(this.check('SYMBOL','.')){
+
+      if (this.check('SYMBOL', '.')) {
         const check = this.peekNextToken()
-        if(check.type === 'SYMBOL' && check.value === '(' ){
-            this.expectToken('SYMBOL', '.');
-            this.expectToken('SYMBOL', '(');
-            const targetType = this.parseGoTypeName();
-            this.expectToken('SYMBOL', ')');
-            node = { kind: 'cast', operator: 'as', oldType: (node as any).type, newType: targetType, operand: node } as any;
+        if (check.type === 'SYMBOL' && check.value === '(') {
+          this.expectToken('SYMBOL', '.');
+          this.expectToken('SYMBOL', '(');
+          const targetType = this.parseGoTypeName();
+          this.expectToken('SYMBOL', ')');
+          node = { kind: 'cast', operator: 'as', oldType: (node as any).type, newType: targetType, operand: node } as any;
         }
         else node = this.parsePostfix(node);
       }
@@ -1066,7 +1113,7 @@ export class Parser {
     }
     return node;
   }
-
+  // StructLiteralNode
   private parseCallAfterName(name: string): CallNode {
     this.expectToken('SYMBOL', '(');
     const args: MathNode[] = [];

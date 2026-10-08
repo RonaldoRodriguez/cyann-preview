@@ -3,7 +3,7 @@ import {
   MathNode, MathType, FunctionType, StructType, TypeRegistry,
   FunctionLiteralNode, ClosureNode, CaptureAccessNode,
   CapturedVar, VariableNode, ArithmeticType, PatternNode,
-  MakeArrayNode, CallNode, StructAccessNode,
+  MakeArrayNode, CallNode, StructAccessNode, SizeOfNode, computeStructLayout,
 } from './types';
 import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
 import { arithInfo } from './typeSystem';
@@ -151,18 +151,18 @@ export class SemanticAnalyzer {
   private registerBuiltins(): void {
     const s32: MathType = 's32';
     const builtins: { name: string; params: MathType[]; ret: MathType | null }[] = [
-      { name: 'arena_save',    params: [],              ret: s32 },
-      { name: 'arena_restore', params: [s32],           ret: null },
-      { name: 'arena_alloc',   params: [s32],           ret: s32 },
-      { name: 'memcpy',        params: [s32, s32, s32], ret: null },
-      { name: 'mem_read32',    params: [s32],           ret: s32 },
-      { name: 'mem_write32',   params: [s32, s32],      ret: null },
-      { name: 'mem_read8',     params: [s32],           ret: s32 },
-      { name: 'mem_write8',    params: [s32, s32],      ret: null },
-      { name: 'str_len',       params: ['string'],      ret: s32 },
-      { name: 'str_concat',    params: ['string', 'string'], ret: 'string' },
-      { name: 'str_eq',        params: ['string', 'string'], ret: 'bool' },
-      { name: 'str_ne',        params: ['string', 'string'], ret: 'bool' },
+      { name: 'arena_save',    params: [],              ret: s32            },
+      { name: 'arena_restore', params: [s32],           ret: null           },
+      { name: 'arena_alloc',   params: [s32],           ret: s32            },
+      { name: 'memcpy',        params: [s32, s32, s32], ret: null           },
+      { name: 'mem_read32',    params: [s32],           ret: s32            },
+      { name: 'mem_write32',   params: [s32, s32],      ret: null           },
+      { name: 'mem_read8',     params: [s32],           ret: s32            },
+      { name: 'mem_write8',    params: [s32, s32],      ret: null           },
+      { name: 'str_len',       params: ['string'],      ret: s32            },
+      { name: 'str_concat',    params: ['string', 'string'], ret: 'string'  },
+      { name: 'str_eq',        params: ['string', 'string'], ret: 'bool'    },
+      { name: 'str_ne',        params: ['string', 'string'], ret: 'bool'    },
     ];
     for (const b of builtins) {
       const fnType: FunctionType = {
@@ -532,7 +532,6 @@ export class SemanticAnalyzer {
           : null;
         const declaredType = stmt.inferred ? null : this.resolveType(stmt.type);
         let finalType = declaredType ?? initType ?? this.resolveType(stmt.type);
-
         if (initType !== null && declaredType !== null &&
             !this.isAssignableType(initType, declaredType)) {
           const contextualized = stmt.initExpr !== null &&
@@ -571,7 +570,7 @@ export class SemanticAnalyzer {
         this.checkEscape(stmt.expr, this.currentLevel, `:= '${stmt.name}'`);
         break;
       }
-
+// Ninguna sobrecarga de 
       case 'multi_decl': {
         const md = stmt as MultiDeclNode;
         const firstType = this.resolveType(this.analyzeExpression(md.expr));
@@ -1080,6 +1079,10 @@ export class SemanticAnalyzer {
         if (boolBridge) return to;
         if (this.isArithmetic(from) && this.isArithmetic(to)) return to;
         if (typeof from === 'object' && from.kind ==='struct' &&  this._structCache.has(from.name) && (to === 's32')) return to;
+        if ((from === 's32') &&  typeof to === 'object' && to.kind === 'struct' && this._structCache.has(to.name)) return to; 
+        //if ((from === 's32') &&  typeof to === 'object' && to.kind === 'dynarray') return to; 
+        if ((to === 's32') &&  typeof from === 'object' && from.kind === 'dynarray') return to; 
+
         this.error(`cast no soportado: ${this.typeName(from)} → ${this.typeName(to)}`);
         return to;
       }
@@ -1473,6 +1476,8 @@ export class SemanticAnalyzer {
           return 's32';
         }
 
+        //console.log(baseType)
+
         const field = baseType.fields.find(c => c.name === node.fieldName);
         if (field) {
           node.resolvedBaseType = baseType;
@@ -1486,7 +1491,6 @@ export class SemanticAnalyzer {
             return this.buildMethodValue(node, baseType, method);
           }
         }
-
         this.error(`Campo '${node.fieldName}' no existe en '${baseType.name}'`);
         node.type = 's32';
         return 's32';
@@ -1549,8 +1553,97 @@ export class SemanticAnalyzer {
         return operandType;
       }
 
+      case 'size_of': {
+        const s = node as SizeOfNode;
+        let size = 0;
+
+        if (s.identName) {
+          if (this.scopeControl.has(s.identName) && !this.typeRegistry.hasType(s.identName)) {
+            const sym = this.scopeControl.lookup(s.identName);
+            const resolvedType = this.resolveType(sym.type);
+            size = this.computeTypeSize(resolvedType);
+          } else if (this.typeRegistry.hasType(s.identName)) {
+            size = this.typeRegistry.getSize(s.identName);
+          } else if (this.typeAliases.has(s.identName)) {
+            const resolvedType = this.resolveType(this.typeAliases.get(s.identName)!);
+            size = this.computeTypeSize(resolvedType);
+          } else if (this.scopeControl.has(s.identName)) {
+            const sym = this.scopeControl.lookup(s.identName);
+            const resolvedType = this.resolveType(sym.type);
+            size = this.computeTypeSize(resolvedType);
+          } else {
+            this.error(`Identificador o tipo no definido: '${s.identName}'`);
+            node.type = 's32';
+            return 's32';
+          }
+        } else if (s.targetType) {
+          const resolvedType = this.resolveType(s.targetType);
+          size = this.computeTypeSize(resolvedType, s.identName);
+        } else if (s.expr) {
+          const resolvedType = this.resolveType(this.analyzeExpression(s.expr));
+          size = this.computeTypeSize(resolvedType);
+        } else {
+          this.error('size_of requiere un tipo o una expresión válida');
+          node.type = 's32';
+          return 's32';
+        }
+
+        s.value = size;
+        s.type = 's32';
+
+        (node as any).kind = 'const';
+        (node as any).type = 's32';
+        (node as any).value = size;
+        return 's32';
+      }
+
       default: return 's32';
     }
+  }
+
+  private computeTypeSize(t: MathType, identName?: string): number {
+    if (identName && this.typeRegistry.hasType(identName)) {
+      return this.typeRegistry.getSize(identName);
+    }
+    if (t === 'null' || t === 'tuple') return 4;
+    if (typeof t === 'string') {
+      switch (t) {
+        case 's32': case 'u32': case 'f32': case 'string': return 4;
+        case 's64': case 'u64': case 'f64': return 8;
+        case 'bool': return 1;
+        default: {
+          if (this.typeRegistry.hasType(t)) {
+            return this.typeRegistry.getSize(t);
+          }
+          return 4;
+        }
+      }
+    }
+    if (t.kind === 'pointer' || t.kind === 'dynarray' || t.kind === 'function') {
+      return 4;
+    }
+    if (t.kind === 'array') {
+      return this.computeTypeSize(t.elementType) * t.length;
+    }
+    if (t.kind === 'struct') {
+      if (t.size > 0) return t.size;
+      if (t.name && this.typeRegistry.hasType(t.name)) {
+        return this.typeRegistry.getSize(t.name);
+      }
+      if (t.fields && t.fields.length > 0) {
+        const layout = computeStructLayout(
+          this.typeRegistry,
+          t.fields.map(f => ({
+            name: f.name,
+            type: this.registryTypeName(f.type),
+            mathType: f.type,
+          }))
+        );
+        return layout.size;
+      }
+      return 0;
+    }
+    return 4;
   }
 
   private buildMethodValue(
@@ -1844,9 +1937,25 @@ export class SemanticAnalyzer {
 
   private mathTypeFromRegistryName(name: string): MathType {
     switch (name) {
+      case 'int':
       case 'i32': return 's32';
+      case 'long':
       case 'i64': return 's64';
-      case 'u32': case 'u64': case 'f32': case 'f64': case 'bool': case 'string': return name;
+      case 'uint':
+      case 'u32': return 'u32';
+      case 'u64': return 'u64';
+      case 'float':
+      case 'f32': return 'f32';
+      case 'double':
+      case 'f64': return 'f64';
+      case 'bool':
+      case 'string': return name;
+      case 'byte':
+      case 'char':
+      case 'i8':
+      case 'u8':
+      case 'i16':
+      case 'u16': return 's32';
     }
 
     if (name.startsWith('[]')) {

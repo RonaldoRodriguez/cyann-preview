@@ -4,7 +4,7 @@ import {
   FunctionRefNode, ArithmeticType, StructType,
   StructLiteralNode, StructAccessNode, ArrayLiteralNode, ArrayAccessNode,
   CallIndirectNode, VariableNode, MakeArrayNode, CastNode, BinaryNode,
-  ClosureNode, CaptureAccessNode, PatternNode,
+  ClosureNode, CaptureAccessNode, PatternNode, SizeOfNode,
 } from './types';
 import {
   StatementNode, FunctionDefNode, VarConstNode, ShortVarDeclNode,
@@ -123,8 +123,11 @@ export function handleImplicitConversion(
     return;
   }
 
-  if (typeof from !== 'string' || typeof to !== 'string') throw new Error(`Type mismatch: compuesto (${from} → ${to})`);
-  if (from === 'string' || to === 'string' || from === 'bool' || to === 'bool') throw new Error(`Type mismatch: ${from} → ${to}`);
+  if (typeof from !== 'string' || typeof to !== 'string') throw new Error(`Type mismatch: compuesto (${typeof from === 'string' ? from : typeof from as MathType} → ${typeof to === 'string' ? to : typeof to as MathType
+})`);
+  if (from === 'string' || to === 'string' || from === 'bool' || to === 'bool') throw new Error(`Type mismatch: ${typeof to === 'string' ? to : typeof to as MathType
+} → ${typeof to === 'string' ? to : typeof to as MathType
+}`);
 
   if (from === 'f64' && to === 'f32') {
     if (!canConvertF64ToF32((exprAst as any).value ?? 0)) {
@@ -150,7 +153,7 @@ export function emitLoadForType(b: FunctionIRBuilder, t: MathType, offset = 0): 
     default: throw new Error(`Load no soportado para ${t}`);
   }
 }
-
+// cast entre compuestos no soportado
 export function emitStoreForType(b: FunctionIRBuilder, t: MathType, offset = 0): void {
   if (typeof t === 'object' && t.kind === 'array') {
     const total = sizeOfType(t);
@@ -334,6 +337,13 @@ export class ExpressionCompiler {
         }
         throw new Error('Unario no soportado');
       }
+
+      case 'size_of': {
+        const s = node as SizeOfNode;
+        this.b.i32Const(s.value ?? 0);
+        return 's32';
+      }
+
       case 'make_array': {
         const n = node as MakeArrayNode;
         if (!n.elementType || !n.type) {
@@ -363,6 +373,9 @@ export class ExpressionCompiler {
         if ((from === 'bool' && (to === 's32' || to === 'u32')) ||
             (to === 'bool' && (from === 's32' || from === 'u32'))) return to;
         if (typeof from === 'object' && from.kind ==='struct' && (to === 's32')) return to;
+        if (typeof to === 'object' && to.kind ==='struct' && (from === 's32')) return to;
+        if (typeof from === 'object' && from.kind ==='dynarray' && (to === 's32')) return to;
+
         if (typeof from !== 'string' || typeof to !== 'string') {
           throw new Error(`cast entre compuestos no soportado (${from} → ${to})`);
         }
@@ -404,14 +417,12 @@ export class ExpressionCompiler {
         this.b.callByName(c.name);
         return c.type;
       }
-
       case 'struct_literal': {
         const s = node as StructLiteralNode;
         const st = s.type as StructType;
         this.b.i32Const(st.size);
         this.b.callByName(RT_ALLOC);
         const base = this.fresh('struct', 'i32'); this.b.setLocal(base);
-
         for (const fv of s.fields) {
           const fd = st.fields.find(f => f.name === fv.name);
           if (!fd) throw new Error(`Campo '${fv.name}' no existe en '${st.name}'`);
@@ -422,6 +433,7 @@ export class ExpressionCompiler {
         }
         this.b.getLocal(base);
         return st;
+    
       }
       case 'struct_access': {
         const a = node as StructAccessNode;
@@ -977,7 +989,7 @@ export class ExpressionCompiler {
       case 'f64': this.b.f64Const(1); isIncrement ? this.b.f64Add() : this.b.f64Sub(); break;
     }
   }
-
+// case 'cast':
   private emitIncrementAddress(target: any): string {
     const address = this.fresh('inc_addr', 'i32');
 
@@ -1144,7 +1156,6 @@ export class CodeGenerator {
 
     const {
       all: functionRefs,
-      direct: directRefs,
       zeroCapture: zeroCaptureClosures,
     } = this.collectFunctionRefs(stmts);
     this.envFunctions = functionRefs;
@@ -1340,11 +1351,13 @@ export class CodeGenerator {
       b.globalSet(RT_PTR);
     }, ['mark']);
 
+
     m.addFunction(RT_ALLOC, ['i32'], 'i32', (b) => {
       const aligned = b.addLocal('$aligned', 'i32');
       const end     = b.addLocal('$end', 'i32');
       const pages   = b.addLocal('$pages', 'i32');
       const oldSize = b.addLocal('$old_size', 'i32');
+
 
       b.globalGet(RT_PTR);
       b.i32Const(MASK);
@@ -1463,6 +1476,12 @@ export class CodeGenerator {
     }, ['a', 'b']);
 
     m.addFunction('str_concat', ['i32', 'i32'], 'i32', (b) => {
+      // len_a: i32
+      // len_b: i32
+      // buf: i32
+      // len_a = *(a - 4)
+      // len_b = *(b - 4)
+      // buf = alloc((len_a + len_b) + 4)
       b.addLocal('len_a', 'i32'); b.addLocal('len_b', 'i32'); b.addLocal('buf', 'i32');
       b.getLocal('a'); b.i32Const(4); b.i32Sub(); b.i32Load(); b.setLocal('len_a');
       b.getLocal('b'); b.i32Const(4); b.i32Sub(); b.i32Load(); b.setLocal('len_b');
@@ -1493,7 +1512,6 @@ export class CodeGenerator {
       case 'const_decl':
       case 'var_decl': {
         const v = stmt as VarConstNode;
-
         if (topLevel && (v as any).isGlobal) {
           const wt = semanticToWasmType(v.type);
           let init: number | bigint | null = null;

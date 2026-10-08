@@ -14,7 +14,7 @@ export class Optimizer {
       body: program.body.map(stmt => this.optimizeStatement(stmt))
     };
   }
-
+// Error: cast entre compuestos no soportado
   public optimizeStatement(stmt: StatementNode): StatementNode {
     switch (stmt.kind) {
       case 'var_decl':

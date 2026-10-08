@@ -498,6 +498,13 @@ export function foldConstants(node: MathNode): MathNode {
     return node;
   }
 
+  if (node.kind === 'size_of') {
+    if ((node as any).value !== undefined) {
+      return { kind: 'const', type: 's32', value: (node as any).value };
+    }
+    return node;
+  }
+
   if (node.kind === 'call_indirect') {
     return {
       ...node,
