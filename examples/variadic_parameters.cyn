@@ -1,0 +1,35 @@
+import "lib/std.cyn" as std
+
+func sum(values ...int) int {
+    var result int = 0
+    for value in values {
+        result = result + value
+    }
+    return result
+}
+
+func add_to(base int, values ...int) int {
+    var result int = base
+    for value in values {
+        result = result + value
+    }
+    return result
+}
+
+func main() {
+    var sum_fn = sum
+    std::print("integers: ")
+    std::println(1, 2, 3)
+    std::println(true, false, true)
+    std::println("one", " ", "string", " ", "line")
+    std::println()
+    std::println(7)
+    if sum() == 0 && sum(1, 2, 3, 4) == 10 &&
+       add_to(5, 2, 3) == 10 && sum_fn(6, 7) == 13 {
+        std::println("TODO OK")
+    } else {
+        std::println("HAY FALLOS")
+    }
+}
+
+main()

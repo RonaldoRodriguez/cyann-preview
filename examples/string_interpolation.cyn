@@ -1,0 +1,27 @@
+import "lib/std.cyn" as std
+
+func word() string {
+    return "world"
+}
+
+func main() {
+    var signed int = -42
+    var minimum int = -2147483647
+    minimum = minimum - 1
+    var large u32 = 4294967295u
+    var enabled bool = true
+
+    var greeting string = $"Hello {word()}!"
+    var details string = $"signed={signed}, min={minimum}, large={large}, enabled={enabled}; {{literal}}"
+
+    std::println(greeting)
+    std::println(details)
+    if greeting == "Hello world!" &&
+       details == "signed=-42, min=-2147483648, large=4294967295, enabled=true; {literal}" {
+        std::println("TODO OK")
+    } else {
+        std::println("HAY FALLOS")
+    }
+}
+
+main()

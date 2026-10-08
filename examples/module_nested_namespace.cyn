@@ -1,0 +1,15 @@
+import "lib/namespace_root.cyn" as root
+
+func main() {
+    var score root::level::api::Score = root::level::api::next_score()
+    root::level::api::shared_count = 20
+    root::level::std::assert(score == 1)
+    root::level::std::assert(root::level::api::next_score() == 21)
+
+    var point root::level::api::Point = root::level::api::make_point(4, 9)
+    root::level::std::assert(point.x == 4)
+    root::level::std::assert(point.y == 9)
+    root::level::std::println("nested module namespaces TODO OK")
+}
+
+main()

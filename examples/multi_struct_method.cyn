@@ -1,0 +1,35 @@
+@include("lib/std.cyn")
+
+type Point struct {
+    x int
+    y int
+}
+
+type Size struct {
+    x int
+    y int
+}
+
+[Point, Size]
+func translate(dx int, dy int) {
+    self.x = self.x + dx
+    self.y = self.y + dy
+}
+
+[Point, Size]
+func total() int {
+    return self.x + self.y
+}
+
+func main() {
+    var point Point = Point{x: 2, y: 3}
+    var size Size = Size{x: 10, y: 20}
+
+    point.translate(4, 5)
+    size.translate(-2, 1)
+    assert(point.total() == 14)
+    assert(size.total() == 29)
+    println("multi-struct methods TODO OK")
+}
+
+main()

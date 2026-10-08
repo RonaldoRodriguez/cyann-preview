@@ -1,7 +1,8 @@
 // std.cyn — Utilidades básicas para programas Cyann que usan WASI.
 //
 // Uso desde un archivo de examples/:
-//     @include("lib/std.cyn")
+//     import "lib/std.cyn" as std
+//     std::println("hola")
 //
 // La biblioteca combina salida WASI, conversión básica, helpers numéricos
 // y utilidades de strings. Los enteros `int` son de 32 bits en wasm32.
@@ -21,41 +22,66 @@ func _write(fd int, ptr int, length int) {
     _wasi_fd_write(fd, _iovec, 1, _nwrite)
 }
 
-func print(value string) {
+export func print(value string) {
     _write(1, value, str_len(value))
 }
 
-func print(value int) {
+export func print(value int) {
     print_int(value)
 }
 
-func print(value bool) {
+export func print(value bool) {
     print_bool(value)
 }
 
-func println(value string) {
+export func println(value string) {
     print(value)
     print("\n")
 }
 
-func println(value int) {
+export func println(value int) {
     println_int(value)
 }
 
-func println(value bool) {
+export func println(value bool) {
     println_bool(value)
 }
 
-func eprint(value string) {
+export func println() {
+    print("\n")
+}
+
+export func println(values ...string) {
+    for value in values {
+        print(value)
+    }
+    print("\n")
+}
+
+export func println(values ...int) {
+    for value in values {
+        print_int(value)
+    }
+    print("\n")
+}
+
+export func println(values ...bool) {
+    for value in values {
+        print_bool(value)
+    }
+    print("\n")
+}
+
+export func eprint(value string) {
     _write(2, value, str_len(value))
 }
 
-func eprintln(value string) {
+export func eprintln(value string) {
     eprint(value)
     eprint("\n")
 }
 
-func print_char(value int) {
+export func print_char(value int) {
     mem_write8(_nwrite, value)
     _write(1, _nwrite, 1)
 }
@@ -67,135 +93,135 @@ func _print_int(fd int, value int) {
     }
 }
 
-func print_int(value int) {
+export func print_int(value int) {
     _print_int(1, value)
 }
 
-func println_int(value int) {
+export func println_int(value int) {
     print_int(value)
     print_char(10)
 }
 
-func eprint_int(value int) {
+export func eprint_int(value int) {
     _print_int(2, value)
 }
 
-func exit(code int) {
+export func exit(code int) {
     _wasi_proc_exit(code)
 }
 
-func panic(message string) {
+export func panic(message string) {
     eprintln(message)
     exit(1)
 }
 
-func assert(condition bool) {
+export func assert(condition bool) {
     if !condition {
         panic("assertion failed")
     }
 }
 
-func min(a int, b int) int {
+export func min(a int, b int) int {
     if a < b { return a }
     return b
 }
 
-func max(a int, b int) int {
+export func max(a int, b int) int {
     if a > b { return a }
     return b
 }
 
-func abs(value int) int {
+export func abs(value int) int {
     if value < 0 { return -value }
     return value
 }
 
-func clamp(value int, low int, high int) int {
+export func clamp(value int, low int, high int) int {
     if value < low { return low }
     if value > high { return high }
     return value
 }
 
-func sign(value int) int {
+export func sign(value int) int {
     if value < 0 { return -1 }
     if value > 0 { return 1 }
     return 0
 }
 
-func int_is_even(value int) bool {
+export func int_is_even(value int) bool {
     return value % 2 == 0
 }
 
-func int_is_odd(value int) bool {
+export func int_is_odd(value int) bool {
     return value % 2 != 0
 }
 
-func min(a f32, b f32) f32 {
+export func min(a f32, b f32) f32 {
     if a < b { return a }
     return b
 }
 
-func max(a f32, b f32) f32 {
+export func max(a f32, b f32) f32 {
     if a > b { return a }
     return b
 }
 
-func clamp(value f32, low f32, high f32) f32 {
+export func clamp(value f32, low f32, high f32) f32 {
     if value < low { return low }
     if value > high { return high }
     return value
 }
 
-func abs(value f32) f32 {
+export func abs(value f32) f32 {
     if value < 0.0 { return -value }
     return value
 }
 
-func min(a f64, b f64) f64 {
+export func min(a f64, b f64) f64 {
     if a < b { return a }
     return b
 }
 
-func max(a f64, b f64) f64 {
+export func max(a f64, b f64) f64 {
     if a > b { return a }
     return b
 }
 
-func clamp(value f64, low f64, high f64) f64 {
+export func clamp(value f64, low f64, high f64) f64 {
     if value < low { return low }
     if value > high { return high }
     return value
 }
 
-func abs(value f64) f64 {
+export func abs(value f64) f64 {
     if value < 0.0 { return -value }
     return value
 }
 
-func print_bool(value bool) {
+export func print_bool(value bool) {
     if value { print("true") }
     else { print("false") }
 }
 
-func println_bool(value bool) {
+export func println_bool(value bool) {
     print_bool(value)
     print_char(10)
 }
 
-func str_from_bool(value bool) string {
+export func str_from_bool(value bool) string {
     if value { return "true" }
     return "false"
 }
 
-func str_is_empty(value string) bool {
+export func str_is_empty(value string) bool {
     return str_len(value) == 0
 }
 
-func str_is_not_empty(value string) bool {
+export func str_is_not_empty(value string) bool {
     return str_len(value) != 0
 }
 
-func digit_to_str(digit int) string {
+export func digit_to_str(digit int) string {
     switch digit {
     case 0: return "0"
     case 1: return "1"
@@ -211,7 +237,7 @@ func digit_to_str(digit int) string {
     return "?"
 }
 
-func str_from_int(value int) string {
+export func str_from_int(value int) string {
     if value == 0 { return "0" }
 
     var negative bool = value < 0

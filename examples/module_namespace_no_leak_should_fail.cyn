@@ -1,0 +1,7 @@
+import "lib/std.cyn" as std
+
+func main() {
+    println("este nombre no se importa sin calificar")
+}
+
+main()

@@ -1,7 +1,7 @@
 import { SourceLocation, SourceMap } from './sourceMap';
 
 export type TokenType =
-  | 'KEYWORD' | 'IDENTIFIER' | 'NUMBER' | 'STRING'
+  | 'KEYWORD' | 'IDENTIFIER' | 'NUMBER' | 'STRING' | 'TEMPLATE'
   | 'BOOLEAN' | 'SYMBOL' | 'EOF';
 
 export interface Token {
@@ -10,6 +10,7 @@ export interface Token {
   line: number;
   column: number;
   filePath: string;
+  terminated?: boolean;
 }
 
 export class Lexer {
@@ -72,6 +73,31 @@ export class Lexer {
     const startIndex = this.index;
     const startLine = this.line, startColumn = this.column;
     const ch = this.peekChar();
+
+    if (ch === '$' && this.source[this.index + 1] === '"') {
+      this.nextChar();
+      this.nextChar();
+      let value = '';
+      let terminated = false;
+      while (!this.isEOF() && this.peekChar() !== '"') {
+        if (this.peekChar() === '\\') {
+          this.nextChar();
+          const esc = this.nextChar();
+          switch (esc) {
+            case 'n': value += '\n'; break;
+            case 't': value += '\t'; break;
+            case 'r': value += '\r'; break;
+            case '0': value += '\0'; break;
+            default: value += esc; break;
+          }
+        } else value += this.nextChar();
+      }
+      if (this.peekChar() === '"') {
+        this.nextChar();
+        terminated = true;
+      }
+      return { ...this.token('TEMPLATE', value, startIndex, startLine, startColumn), terminated };
+    }
 
     // Strings
     if (ch === '"' || ch === "'") {

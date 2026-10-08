@@ -1,0 +1,7 @@
+import "lib/std.cyn" as std
+
+func main() {
+    std::println(1, "two")
+}
+
+main()

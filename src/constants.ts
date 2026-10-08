@@ -513,6 +513,13 @@ export function foldConstants(node: MathNode): MathNode {
     return { ...node, args: node.args.map(arg => foldConstants(arg)) };
   }
 
+  if (node.kind === 'interpolated_string') {
+    return {
+      ...node,
+      parts: node.parts.map(part => typeof part === 'string' ? part : foldConstants(part)),
+    };
+  }
+
   if (node.kind === 'array_literal') {
     return { ...node, elements: node.elements.map(el => foldConstants(el)) };
   }

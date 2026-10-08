@@ -1,0 +1,7 @@
+func invalid(values ...int = 0) {
+}
+
+func main() {
+}
+
+main()

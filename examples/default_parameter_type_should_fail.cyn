@@ -1,0 +1,9 @@
+type Point struct {
+    x int
+}
+
+func invalid(value Point = 1) {}
+
+func main() {}
+
+main()

@@ -1,0 +1,7 @@
+func invalid(values ...int, suffix string) {
+}
+
+func main() {
+}
+
+main()

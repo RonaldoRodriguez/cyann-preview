@@ -1,0 +1,5 @@
+func invalid(value int = unavailable) {}
+
+func main() {}
+
+main()

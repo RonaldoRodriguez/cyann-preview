@@ -1,0 +1,13 @@
+func choose(value int = 1) int {
+    return value
+}
+
+func choose(value string = "one") string {
+    return value
+}
+
+func main() {
+    choose()
+}
+
+main()

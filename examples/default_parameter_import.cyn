@@ -1,0 +1,10 @@
+@include("lib/std.cyn")
+
+import "lib/defaults.cyn"::add_offset
+
+func main() {
+    assert(add_offset(10) == 15)
+    assert(add_offset(10, 3) == 13)
+}
+
+main()

@@ -1,0 +1,36 @@
+@include("lib/std.cyn")
+
+func default_step() int {
+    return 4
+}
+
+func add(base int, amount int = default_step()) int {
+    return base + amount
+}
+
+type Point struct {
+    x int
+    y int
+}
+
+[Point]
+func move(dx int = 1, dy int = 2) {
+    self.x = self.x + dx
+    self.y = self.y + dy
+}
+
+func main() {
+    assert(add(3) == 7)
+    assert(add(3, 5) == 8)
+
+    var point Point = Point{x: 10, y: 20}
+    point.move()
+    assert(point.x == 11)
+    assert(point.y == 22)
+    point.move(4)
+    assert(point.x == 15)
+    assert(point.y == 24)
+    println("default parameters TODO OK")
+}
+
+main()

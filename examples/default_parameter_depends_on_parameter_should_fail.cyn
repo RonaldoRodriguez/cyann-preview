@@ -1,0 +1,5 @@
+func invalid(base int, value int = base) {}
+
+func main() {}
+
+main()

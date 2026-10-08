@@ -37,7 +37,7 @@ export function mangleType(t: MathType): string {
     case 'function': {
       const params  = t.paramTypes.map(mangleType).join('.');
       const returns = t.returnTypes.map(mangleType).join('.');
-      return 'F' + params + '~' + returns;
+      return 'F' + params + '~' + returns + (t.variadic ? 'V' : '');
     }
     default: {
       const _exhaustive: never = t;
@@ -46,12 +46,19 @@ export function mangleType(t: MathType): string {
   }
 }
 
-export function mangleFunctionName(name: string, paramTypes: MathType[]): string {
-  if (paramTypes.length === 0) return `${name}__v`;
-  return `${name}__${paramTypes.map(mangleType).join('_')}`;
+export function mangleFunctionName(
+  name: string,
+  paramTypes: MathType[],
+  variadic = false,
+): string {
+  const signature = paramTypes.length === 0
+    ? 'v'
+    : paramTypes.map(mangleType).join('_');
+  return `${name}__${signature}${variadic ? '_variadic' : ''}`;
 }
 
 export function functionParamsEqual(a: FunctionType, b: FunctionType): boolean {
+  if ((a.variadic ?? false) !== (b.variadic ?? false)) return false;
   if (a.paramTypes.length !== b.paramTypes.length) return false;
   for (let i = 0; i < a.paramTypes.length; i++) {
     if (!typesEqual(a.paramTypes[i], b.paramTypes[i])) return false;

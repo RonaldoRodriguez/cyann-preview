@@ -1,6 +1,6 @@
 // std_library.cyn — Pruebas de las utilidades agrupadas en lib/std.cyn.
 
-@include("lib/std.cyn")
+import "lib/std.cyn" as std
 
 var g_pass int = 0
 var g_fail int = 0
@@ -8,83 +8,83 @@ var g_fail int = 0
 func check(got int, want int, label string) {
     if got == want {
         g_pass = g_pass + 1
-        println("  ok   " + label)
+        std::println("  ok   " + label)
     } else {
         g_fail = g_fail + 1
-        println("  FAIL " + label)
+        std::println("  FAIL " + label)
     }
 }
 
 func check_bool(got bool, want bool, label string) {
     if got == want {
         g_pass = g_pass + 1
-        println("  ok   " + label)
+        std::println("  ok   " + label)
     } else {
         g_fail = g_fail + 1
-        println("  FAIL " + label)
+        std::println("  FAIL " + label)
     }
 }
 
 func check_str(got string, want string, label string) {
     if got == want {
         g_pass = g_pass + 1
-        println("  ok   " + label)
+        std::println("  ok   " + label)
     } else {
         g_fail = g_fail + 1
-        println("  FAIL " + label)
+        std::println("  FAIL " + label)
     }
 }
 
 func check_f64(got f64, want f64, label string) {
     if got == want {
         g_pass = g_pass + 1
-        println("  ok   " + label)
+        std::println("  ok   " + label)
     } else {
         g_fail = g_fail + 1
-        println("  FAIL " + label)
+        std::println("  FAIL " + label)
     }
 }
 
 func main() {
-    check(min(3, 7), 3, "min int")
-    check(max(3, 7), 7, "max int")
-    check(abs(-15), 15, "abs int")
-    check(clamp(100, 0, 50), 50, "clamp int")
-    check(sign(-10), -1, "sign negative")
-    check(sign(0), 0, "sign zero")
-    check(sign(10), 1, "sign positive")
-    check_bool(int_is_even(12), true, "int_is_even")
-    check_bool(int_is_odd(13), true, "int_is_odd")
+    check(std::min(3, 7), 3, "min int")
+    check(std::max(3, 7), 7, "max int")
+    check(std::abs(-15), 15, "abs int")
+    check(std::clamp(100, 0, 50), 50, "clamp int")
+    check(std::sign(-10), -1, "sign negative")
+    check(std::sign(0), 0, "sign zero")
+    check(std::sign(10), 1, "sign positive")
+    check_bool(std::int_is_even(12), true, "int_is_even")
+    check_bool(std::int_is_odd(13), true, "int_is_odd")
 
-    check_f64(min(1.5, 2.5), 1.5, "min f64")
-    check_f64(max(1.5, 2.5), 2.5, "max f64")
-    check_f64(clamp(9.0, 0.0, 5.0), 5.0, "clamp f64")
-    check_f64(abs(-3.5), 3.5, "abs f64")
-    check_f64(min(1.5f, 2.5f) as f64, 1.5, "min f32")
-    check_f64(max(1.5f, 2.5f) as f64, 2.5, "max f32")
-    check_f64(clamp(9.0f, 0.0f, 5.0f) as f64, 5.0, "clamp f32")
-    check_f64(abs(-3.5f) as f64, 3.5, "abs f32")
+    check_f64(std::min(1.5, 2.5), 1.5, "min f64")
+    check_f64(std::max(1.5, 2.5), 2.5, "max f64")
+    check_f64(std::clamp(9.0, 0.0, 5.0), 5.0, "clamp f64")
+    check_f64(std::abs(-3.5), 3.5, "abs f64")
+    check_f64(std::min(1.5f, 2.5f) as f64, 1.5, "min f32")
+    check_f64(std::max(1.5f, 2.5f) as f64, 2.5, "max f32")
+    check_f64(std::clamp(9.0f, 0.0f, 5.0f) as f64, 5.0, "clamp f32")
+    check_f64(std::abs(-3.5f) as f64, 3.5, "abs f32")
 
-    check_str(str_from_int(0), "0", "str_from_int zero")
-    check_str(str_from_int(42), "42", "str_from_int positive")
-    check_str(str_from_int(-42), "-42", "str_from_int negative")
+    check_str(std::str_from_int(0), "0", "str_from_int zero")
+    check_str(std::str_from_int(42), "42", "str_from_int positive")
+    check_str(std::str_from_int(-42), "-42", "str_from_int negative")
     var min_s32 int = -2147483647
     min_s32 = min_s32 - 1
-    check_str(str_from_int(min_s32), "-2147483648", "str_from_int minimum s32")
-    println_int(min_s32)
-    eprint_int(min_s32)
-    check_str(str_from_bool(true), "true", "str_from_bool true")
-    check_str(str_from_bool(false), "false", "str_from_bool false")
-    check_bool(str_is_empty(""), true, "str_is_empty")
-    check_bool(str_is_not_empty("cyann"), true, "str_is_not_empty")
+    check_str(std::str_from_int(min_s32), "-2147483648", "str_from_int minimum s32")
+    std::println_int(min_s32)
+    std::eprint_int(min_s32)
+    check_str(std::str_from_bool(true), "true", "str_from_bool true")
+    check_str(std::str_from_bool(false), "false", "str_from_bool false")
+    check_bool(std::str_is_empty(""), true, "str_is_empty")
+    check_bool(std::str_is_not_empty("cyann"), true, "str_is_not_empty")
 
-    print(true)
-    println(false)
-    assert(g_fail == 0)
-    println("Pasan: " + str_from_int(g_pass))
-    println("Fallan: " + str_from_int(g_fail))
-    if g_fail == 0 { println("TODO OK") }
-    else { panic("std library tests failed") }
+    std::print(true)
+    std::println(false)
+    std::assert(g_fail == 0)
+    std::println("Pasan: " + std::str_from_int(g_pass))
+    std::println("Fallan: " + std::str_from_int(g_fail))
+    if g_fail == 0 { std::println("TODO OK") }
+    else { std::panic("std library tests failed") }
 }
 
 main()

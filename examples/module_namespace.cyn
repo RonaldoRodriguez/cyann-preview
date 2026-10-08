@@ -1,0 +1,16 @@
+import "lib/std.cyn" as std
+import "lib/public_api.cyn" as api
+
+func main() {
+    var score api::Score = api::next_score()
+    std::assert(score == 1)
+    api::shared_count = 10
+    std::assert(api::next_score() == 11)
+
+    var point api::Point = api::make_point(4, 9)
+    std::assert(point.x == 4)
+    std::assert(point.y == 9)
+    std::println("module namespaces TODO OK")
+}
+
+main()

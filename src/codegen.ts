@@ -231,6 +231,31 @@ export class ExpressionCompiler {
         return v.type;
       }
       case 'string': this.b.addString((node as any).value); return 'string';
+      case 'interpolated_string': {
+        let hasValue = false;
+        for (const part of node.parts) {
+          let partType: MathType;
+          if (typeof part === 'string') {
+            this.b.addString(part);
+            partType = 'string';
+          } else {
+            partType = this.compileValue(part);
+            if (partType === 'bool') {
+              this.b.callByName('__bool_to_string');
+            } else if (partType === 's32') {
+              this.b.callByName('__s32_to_string');
+            } else if (partType === 'u32') {
+              this.b.callByName('__u32_to_string');
+            } else if (partType !== 'string') {
+              throw new Error(`Tipo no compatible con interpolación: ${String(partType)}`);
+            }
+          }
+          if (hasValue) this.b.callByName('str_concat');
+          hasValue = true;
+        }
+        if (!hasValue) this.b.addString('');
+        return 'string';
+      }
 
       case 'function_ref': {
         const r = node as FunctionRefNode;
@@ -1364,6 +1389,86 @@ export class CodeGenerator {
       b.getLocal('s'); b.i32Const(4); b.i32Sub(); b.i32Load();
     }, ['s']);
 
+    m.addFunction('__bool_to_string', ['i32'], 'i32', (b) => {
+      b.getLocal('value');
+      b.if_('i32');
+        b.addString('true');
+      b.else_();
+        b.addString('false');
+      b.end();
+    }, ['value']);
+
+    const addIntegerToString = (name: string, unsigned: boolean): void => {
+      m.addFunction(name, ['i32'], 'i32', (b) => {
+        b.addLocal('negative', 'i32');
+        b.addLocal('scratch', 'i32');
+        b.addLocal('index', 'i32');
+        b.addLocal('length', 'i32');
+        b.addLocal('result', 'i32');
+
+        if (unsigned) {
+          b.i32Const(0); b.setLocal('negative');
+        } else {
+          b.getLocal('value'); b.i32Const(0); b.i32LtS(); b.setLocal('negative');
+          b.getLocal('value'); b.i32Const(0); b.i32GtS();
+          b.if_('void');
+            b.i32Const(0); b.getLocal('value'); b.i32Sub(); b.setLocal('value');
+          b.end();
+        }
+
+        b.i32Const(16); b.callByName(RT_ALLOC); b.setLocal('scratch');
+        b.i32Const(15); b.setLocal('index');
+        b.getLocal('value'); b.i32Eqz();
+        b.if_('void');
+          b.getLocal('scratch'); b.getLocal('index'); b.i32Add();
+          b.i32Const(48); b.i32Store8();
+          b.getLocal('index'); b.i32Const(1); b.i32Sub(); b.setLocal('index');
+        b.else_();
+          b.block('void', 'int_to_string_done');
+          b.loop('void', 'int_to_string_loop');
+            b.getLocal('value');
+            b.i32Eqz();
+            b.brIfTo('int_to_string_done');
+            b.getLocal('scratch'); b.getLocal('index'); b.i32Add();
+            if (unsigned) {
+              b.getLocal('value'); b.i32Const(10); b.i32RemU();
+            } else {
+              b.i32Const(0); b.getLocal('value');
+              b.i32Const(10); b.i32RemS();
+              b.i32Sub();
+            }
+            b.i32Const(48); b.i32Add(); b.i32Store8();
+            b.getLocal('value');
+            b.i32Const(10);
+            if (unsigned) b.i32DivU(); else b.i32DivS();
+            b.setLocal('value');
+            b.getLocal('index'); b.i32Const(1); b.i32Sub(); b.setLocal('index');
+            b.brTo('int_to_string_loop');
+          b.end();
+          b.end();
+        b.end();
+
+        if (!unsigned) {
+          b.getLocal('negative');
+          b.if_('void');
+            b.getLocal('scratch'); b.getLocal('index'); b.i32Add();
+            b.i32Const(45); b.i32Store8();
+            b.getLocal('index'); b.i32Const(1); b.i32Sub(); b.setLocal('index');
+          b.end();
+        }
+        b.i32Const(15); b.getLocal('index'); b.i32Sub(); b.setLocal('length');
+        b.getLocal('length'); b.i32Const(4); b.i32Add();
+        b.callByName(RT_ALLOC); b.setLocal('result');
+        b.getLocal('result'); b.getLocal('length'); b.i32Store();
+        b.getLocal('result'); b.i32Const(4); b.i32Add();
+        b.getLocal('scratch'); b.getLocal('index'); b.i32Const(1); b.i32Add(); b.i32Add();
+        b.getLocal('length'); b.callByName('memcpy');
+        b.getLocal('result'); b.i32Const(4); b.i32Add();
+      }, ['value']);
+    };
+    addIntegerToString('__s32_to_string', false);
+    addIntegerToString('__u32_to_string', true);
+
     m.addFunction('str_eq', ['i32', 'i32'], 'i32', (b) => {
       b.addLocal('len_a', 'i32'); b.addLocal('i', 'i32');
       b.getLocal('a'); b.i32Const(4); b.i32Sub(); b.i32Load(); b.setLocal('len_a');
@@ -1904,7 +2009,11 @@ export class CodeGenerator {
     const isLambda = fn.name.startsWith('__lambda_');
     const needsEnv = isLambda || this.envFunctions.has(fn.name);
 
-    const userParamWasm = fn.params.map(p => semanticToWasmType(p.type));
+    const parameterType = (param: FunctionDefNode['params'][number]): MathType =>
+      param.variadic
+        ? { kind: 'dynarray', elementType: param.type }
+        : param.type;
+    const userParamWasm = fn.params.map(p => semanticToWasmType(parameterType(p)));
     const paramWasm: any[] = needsEnv ? ['i32', ...userParamWasm] : userParamWasm;
 
     const userParamNames = fn.params.map(p => (p as any).uniqueName ?? p.name);
@@ -1925,14 +2034,15 @@ export class CodeGenerator {
           for (const p of fn.params) {
             if ((p as any).boxed) {
               const uniqueName = (p as any).uniqueName ?? p.name;
-              fb.i32Const(sizeOfType(p.type));
+              const type = parameterType(p);
+              fb.i32Const(sizeOfType(type));
               fb.callByName(RT_ALLOC);
               const tmp = `$box_param_${uniqueName}`;
               fb.addLocal(tmp, 'i32');
               fb.setLocal(tmp);
               fb.getLocal(tmp);
               fb.getLocal(uniqueName);
-              emitStoreForType(fb, p.type, 0);
+              emitStoreForType(fb, type, 0);
               fb.getLocal(tmp);
               fb.setLocal(uniqueName);
             }

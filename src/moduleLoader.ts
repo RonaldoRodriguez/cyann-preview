@@ -16,6 +16,7 @@ interface LoadedModule {
   path: string;
   program: ProgramNode;
   imports: Array<{ declaration: ModuleImportNode; target: LoadedModule }>;
+  namespaceImports: Map<string, LoadedModule>;
   id: number;
   entry: boolean;
   functionNames: Map<string, string>;
@@ -74,11 +75,13 @@ export class ModuleLoader {
         new Set(),
         resolvedPath,
       );
-      const program = new Parser(new Lexer(processed.source, processed.sourceMap)).parseProgram();
+      const parsedProgram = new Parser(new Lexer(processed.source, processed.sourceMap)).parseProgram();
+      const program = this.expandReceiverLists(parsedProgram);
       const module: LoadedModule = {
         path: resolvedPath,
         program,
         imports: [],
+        namespaceImports: new Map(),
         id: -1,
         entry: false,
         functionNames: new Map(),
@@ -112,6 +115,23 @@ export class ModuleLoader {
     }
   }
 
+  private expandReceiverLists(program: ProgramNode): ProgramNode {
+    const body: StatementNode[] = [];
+    for (const stmt of program.body) {
+      if (stmt.kind !== 'function_def' || !stmt.receiverTypes) {
+        body.push(stmt);
+        continue;
+      }
+      for (const receiver of stmt.receiverTypes) {
+        const specialization = structuredClone(stmt);
+        specialization.receiver = receiver;
+        delete specialization.receiverTypes;
+        body.push(specialization);
+      }
+    }
+    return { ...program, body };
+  }
+
   private initializeNamespaces(): void {
     this.order.forEach((module, id) => {
       module.id = id;
@@ -143,6 +163,11 @@ export class ModuleLoader {
 
     for (const module of this.order) {
       for (const { declaration, target } of module.imports) {
+        if (declaration.alias) {
+          module.namespaceImports.set(declaration.alias, target);
+          continue;
+        }
+        if (!declaration.symbol) continue;
         const exported = this.exportedSymbol(target, declaration.symbol);
         if (!exported) continue;
         if (exported.kind === 'function') {
@@ -160,8 +185,26 @@ export class ModuleLoader {
     for (const module of this.order) {
       const ownNames = this.localTopLevelNames(module);
       const importedNames = new Set<string>();
+      const namespaceNames = new Set<string>();
 
       for (const { declaration, target } of module.imports) {
+        if (declaration.alias) {
+          if (ownNames.has(declaration.alias)) {
+            throw this.locatedError(
+              declaration,
+              `El alias de módulo '${declaration.alias}' ya está declarado en ${module.path}`,
+            );
+          }
+          if (importedNames.has(declaration.alias) || namespaceNames.has(declaration.alias)) {
+            throw this.locatedError(
+              declaration,
+              `El nombre de importación '${declaration.alias}' se declara más de una vez en ${module.path}`,
+            );
+          }
+          namespaceNames.add(declaration.alias);
+          continue;
+        }
+        if (!declaration.symbol) continue;
         if (ownNames.has(declaration.symbol)) {
           throw this.locatedError(
             declaration,
@@ -209,6 +252,18 @@ export class ModuleLoader {
         const message = `Símbolo superior duplicado '${name}' en ${module.path}`;
         if (duplicate) throw this.locatedError(duplicate, message);
         throw new Error(message);
+      }
+
+      for (const name of namespaceNames) {
+        if (importedNames.has(name)) {
+          const declaration = module.imports.find(item => item.declaration.alias === name)?.declaration;
+          if (declaration) {
+            throw this.locatedError(
+              declaration,
+              `El nombre de importación '${name}' se declara más de una vez en ${module.path}`,
+            );
+          }
+        }
       }
 
       for (const stmt of module.program.body) {
@@ -286,10 +341,42 @@ export class ModuleLoader {
   private rewritePattern(
     pattern: import('./types').PatternNode,
     typeNames: Map<string, string>,
+    module: LoadedModule,
   ): void {
     if (pattern.kind !== 'struct') return;
-    pattern.structName = typeNames.get(pattern.structName) ?? pattern.structName;
-    for (const field of pattern.fields) this.rewritePattern(field.pattern, typeNames);
+    pattern.structName = typeNames.get(pattern.structName) ??
+      this.resolveQualifiedName(module, pattern.structName, 'type') ??
+      pattern.structName;
+    for (const field of pattern.fields) this.rewritePattern(field.pattern, typeNames, module);
+  }
+
+  private resolveQualifiedName(
+    module: LoadedModule,
+    name: string,
+    kind?: 'function' | 'global' | 'type',
+  ): string | undefined {
+    const parts = name.split('::');
+    if (parts.length < 2 || parts.some(part => part.length === 0)) return undefined;
+    let target = module.namespaceImports.get(parts[0]);
+    if (!target) return undefined;
+    for (const alias of parts.slice(1, -1)) {
+      const exposed = target.imports.some(
+        item => item.declaration.alias === alias && item.declaration.exported,
+      );
+      if (!exposed) return undefined;
+      const nested = target.namespaceImports.get(alias);
+      if (!nested) return undefined;
+      target = nested;
+    }
+    const exported = this.exportedSymbol(target, parts[parts.length - 1]);
+    if (!exported || (kind && exported.kind !== kind)) return undefined;
+    if (exported.kind === 'function') {
+      return target.functionNames.get(exported.name) ?? exported.name;
+    }
+    if (exported.kind === 'global') {
+      return target.globalNames.get(exported.name) ?? exported.name;
+    }
+    return target.typeNames.get(exported.name) ?? exported.name;
   }
 
   private rewriteModule(module: LoadedModule): void {
@@ -303,7 +390,8 @@ export class ModuleLoader {
 
     const rewriteType = (type: MathType): MathType => {
       if (typeof type === 'string') {
-        const rewritten = module.typeNames.get(type);
+        const rewritten = module.typeNames.get(type) ??
+          this.resolveQualifiedName(module, type, 'type');
         return rewritten === undefined ? type : rewritten as MathType;
       }
       switch (type.kind) {
@@ -321,7 +409,9 @@ export class ModuleLoader {
         case 'struct':
           return {
             ...type,
-            name: module.typeNames.get(type.name) ?? type.name,
+            name: module.typeNames.get(type.name) ??
+              this.resolveQualifiedName(module, type.name, 'type') ??
+              type.name,
             fields: type.fields.map(field => ({ ...field, type: rewriteType(field.type) })),
           };
       }
@@ -336,19 +426,25 @@ export class ModuleLoader {
       const node = value as Record<string, unknown>;
 
       if (node.kind === 'variable' && typeof node.name === 'string' && !isLocal(node.name)) {
-        node.name = module.functionNames.get(node.name) ??
-          module.globalNames.get(node.name) ??
+        node.name = this.resolveQualifiedName(module, node.name, 'function') ??
+          this.resolveQualifiedName(module, node.name, 'global') ??
+          module.functionNames.get(node.name) ?? module.globalNames.get(node.name) ??
           node.name;
       } else if (
         (node.kind === 'call' || node.kind === 'function_ref') &&
         typeof node.name === 'string' &&
         !isLocal(node.name)
       ) {
-        node.name = module.functionNames.get(node.name) ?? node.name;
+        node.name = this.resolveQualifiedName(module, node.name, 'function') ??
+          module.functionNames.get(node.name) ?? node.name;
       } else if (node.kind === 'struct_literal' && typeof node.structName === 'string') {
-        node.structName = module.typeNames.get(node.structName) ?? node.structName;
+        node.structName = module.typeNames.get(node.structName) ??
+          this.resolveQualifiedName(module, node.structName, 'type') ??
+          node.structName;
       } else if (node.kind === 'size_of' && typeof node.identName === 'string') {
-        node.identName = module.typeNames.get(node.identName) ?? node.identName;
+        node.identName = module.typeNames.get(node.identName) ??
+          this.resolveQualifiedName(module, node.identName, 'type') ??
+          node.identName;
       } else if (node.kind === 'function_literal') {
         for (const param of node.params as Array<{ name: string; type: MathType }>) {
           param.type = rewriteType(param.type);
@@ -405,7 +501,10 @@ export class ModuleLoader {
               }
             }
             if (stmt.receiver) stmt.receiver = rewriteType(stmt.receiver);
-            stmt.params.forEach(param => { param.type = rewriteType(param.type); });
+            stmt.params.forEach(param => {
+              param.type = rewriteType(param.type);
+              if (param.defaultValue) rewriteExpr(param.defaultValue);
+            });
             stmt.returnTypes = stmt.returnTypes.map(rewriteType);
             pushScope();
             for (const param of stmt.params) declareLocal(param.name);
@@ -491,7 +590,7 @@ export class ModuleLoader {
             rewriteExpr(stmt.expr);
             stmt.cases.forEach(item => {
               item.patterns.forEach(pattern => {
-                this.rewritePattern(pattern, module.typeNames);
+                this.rewritePattern(pattern, module.typeNames, module);
               });
               pushScope();
               rewriteStatements(item.body, false);

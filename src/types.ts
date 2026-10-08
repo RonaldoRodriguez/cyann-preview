@@ -44,6 +44,7 @@ export interface FunctionType {
   kind: 'function';
   paramTypes: MathType[];
   returnTypes: MathType[];
+  variadic?: boolean;
 }
 
 
@@ -72,6 +73,12 @@ export interface StringNode {
   kind: 'string';
   type: 'string';
   value: string;
+}
+
+export interface InterpolatedStringNode {
+  kind: 'interpolated_string';
+  parts: Array<string | MathNode>;
+  type: 'string';
 }
 
 export interface BooleanLiteralNode {
@@ -112,6 +119,7 @@ export interface CallNode {
   type: MathType | 'void';
   paramTypes: MathType[];
   returnTypes?: MathType[];
+  variadic?: boolean;
   importedFrom?: string;
   resolvedBuiltin?: 'is_same' | { kind: 'len'; argumentType: ArrayType | DynArrayType };
 }
@@ -129,6 +137,7 @@ export interface CallIndirectNode {
   type: MathType | 'void';
   paramTypes: MathType[];
   returnTypes?: MathType[];
+  variadic?: boolean;
   hasImplicitSelf?: boolean;
 }
 
@@ -226,6 +235,7 @@ export type MathNode =
   | UnaryNode
   | BinaryNode
   | StringNode
+  | InterpolatedStringNode
   | CastNode
   | BooleanLiteralNode
   | CallNode

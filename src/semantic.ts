@@ -38,7 +38,11 @@ class DiagnosticBag {
   }
 }
 
-export interface FunctionOverload { mangledName: string; type: FunctionType; }
+export interface FunctionOverload {
+  mangledName: string;
+  type: FunctionType;
+  defaultArgs: MathNode[];
+}
 export interface SymbolInfo {
   uniqueName: string;
   type: MathType;
@@ -88,22 +92,31 @@ export class ScopeControl {
     return uniqueName;
   }
 
-  declareFunction(name: string, mangledName: string, fnType: FunctionType, global: boolean): void {
+  declareFunction(
+    name: string,
+    mangledName: string,
+    fnType: FunctionType,
+    global: boolean,
+    defaultArgs: MathNode[] = [],
+  ): void {
     const target = global ? this.scopes[0] : this.scopes[this.scopes.length - 1];
     const existing = target.get(name);
     if (existing) {
       if (!existing.isFunctionDecl) throw new Error(`'${name}' ya está declarado como variable; no se puede sobrecargar`);
       for (const ov of existing.overloads!) {
         if (functionParamsEqual(ov.type, fnType)) {
-          if (ov.mangledName === mangledName) return;
+          if (ov.mangledName === mangledName) {
+            if (defaultArgs.length > 0) ov.defaultArgs = defaultArgs;
+            return;
+          }
           throw new Error(`Sobrecarga duplicada de '${name}'`);
         }
       }
-      existing.overloads!.push({ mangledName, type: fnType });
+      existing.overloads!.push({ mangledName, type: fnType, defaultArgs });
     } else {
       target.set(name, {
         uniqueName: mangledName, type: fnType, mutable: false, isGlobal: global,
-        isFunctionDecl: true, overloads: [{ mangledName, type: fnType }],
+        isFunctionDecl: true, overloads: [{ mangledName, type: fnType, defaultArgs }],
       });
     }
   }
@@ -210,6 +223,8 @@ export class SemanticAnalyzer {
       case 'call_indirect':
       case 'closure':
       case 'function_ref':
+        return this.currentLevel;
+      case 'interpolated_string':
         return this.currentLevel;
       case 'binary': {
         const b = expr as any;
@@ -484,7 +499,10 @@ export class SemanticAnalyzer {
           receiverType = rt;
         }
 
-        const userParamTypes = fn.params.map(p => this.resolveType(p.type));
+        const userParamTypes = fn.params.map(p => {
+          const type = this.resolveType(p.type);
+          return p.variadic ? { kind: 'dynarray' as const, elementType: type } : type;
+        });
         const allParamTypes = receiverType
           ? [receiverType, ...userParamTypes]
           : userParamTypes;
@@ -493,14 +511,18 @@ export class SemanticAnalyzer {
           kind: 'function',
           paramTypes: allParamTypes,
           returnTypes,
+          variadic: fn.params.some(param => param.variadic),
         };
-        const mangledName = mangleFunctionName(fn.name, allParamTypes);
+        const mangledName = mangleFunctionName(fn.name, allParamTypes, fnType.variadic);
+        const defaultArgs = fn.params.flatMap(
+          param => param.defaultValue ? [param.defaultValue] : [],
+        );
 
         if (receiverType) {
-          this.registerMethod(receiverType.name, fn.name, mangledName, fnType);
+          this.registerMethod(receiverType.name, fn.name, mangledName, fnType, defaultArgs);
         }
 
-        this.scopeControl.declareFunction(fn.name, mangledName, fnType, true);
+        this.scopeControl.declareFunction(fn.name, mangledName, fnType, true, defaultArgs);
       });
     }
   }
@@ -510,13 +532,14 @@ export class SemanticAnalyzer {
     methodName: string,
     mangled: string,
     type: FunctionType,
+    defaultArgs: MathNode[],
   ): void {
     let methods = this.methodsByStruct.get(receiverName);
     if (!methods) {
       methods = new Map();
       this.methodsByStruct.set(receiverName, methods);
     }
-    methods.set(methodName, { mangledName: mangled, type });
+    methods.set(methodName, { mangledName: mangled, type, defaultArgs });
   }
 
   private lookupMethod(
@@ -859,7 +882,32 @@ export class SemanticAnalyzer {
       }
     }
 
-    const userParamTypes = fn.params.map(p => this.resolveType(p.type));
+    const parameterNames = new Set(fn.params.map(param => param.name));
+    for (const param of fn.params) {
+      if (!param.defaultValue) continue;
+      if (this.referencesAnyParameter(param.defaultValue, parameterNames)) {
+        this.error(
+          `El valor por defecto de '${param.name}' no puede depender de parámetros de la función`,
+        );
+      }
+      const checkedDefault = structuredClone(param.defaultValue);
+      const defaultType = this.resolveType(this.analyzeExpression(checkedDefault));
+      const paramType = this.resolveType(param.type);
+      const bridge =
+        (defaultType === 'string' && (paramType === 's32' || paramType === 'u32')) ||
+        (paramType === 'string' && (defaultType === 's32' || defaultType === 'u32'));
+      if (!this.isAssignableType(defaultType, paramType) && !bridge) {
+        this.error(
+          `Valor por defecto de '${param.name}': se esperaba ${this.typeName(paramType)}, ` +
+          `se obtuvo ${this.typeName(defaultType)}`,
+        );
+      }
+    }
+
+    const userParamTypes = fn.params.map(p => {
+      const type = this.resolveType(p.type);
+      return p.variadic ? { kind: 'dynarray' as const, elementType: type } : type;
+    });
     const allParamTypes = receiverType
       ? [receiverType, ...userParamTypes]
       : userParamTypes;
@@ -868,19 +916,23 @@ export class SemanticAnalyzer {
       kind: 'function',
       paramTypes: allParamTypes,
       returnTypes,
+      variadic: fn.params.some(param => param.variadic),
     };
 
     const sourceName = fn.name;
     const isLambda = sourceName.startsWith('__lambda_');
     const mangledName = isLambda
       ? sourceName
-      : mangleFunctionName(sourceName, allParamTypes);
+      : mangleFunctionName(sourceName, allParamTypes, fnType.variadic);
+    const defaultArgs = fn.params.flatMap(
+      param => param.defaultValue ? [param.defaultValue] : [],
+    );
 
     if (isLambda) {
       this.scopeControl.declareFunction(sourceName, mangledName, fnType, false);
     } else if (!receiverType) {
       this.scopeControl.declareFunction(
-        sourceName, mangledName, fnType, this.scopeControl.isGlobal()
+        sourceName, mangledName, fnType, this.scopeControl.isGlobal(), defaultArgs,
       );
     }
     (fn as any).mangledName = mangledName;
@@ -909,7 +961,10 @@ export class SemanticAnalyzer {
     const userParamStart = receiverType ? 1 : 0;
     for (let i = userParamStart; i < fn.params.length; i++) {
       const param = fn.params[i];
-      const paramType = this.resolveType(param.type);
+      const resolvedParamType = this.resolveType(param.type);
+      const paramType = param.variadic
+        ? { kind: 'dynarray' as const, elementType: resolvedParamType }
+        : resolvedParamType;
       const isBoxed = capturedNames.has(param.name);
       const uniqueName = this.scopeControl.declare(
         param.name, paramType, true, false, isBoxed
@@ -935,6 +990,20 @@ export class SemanticAnalyzer {
     this.capturedNamesStack.pop();
 
     fn.name = mangledName;
+  }
+
+  private referencesAnyParameter(value: unknown, parameterNames: Set<string>): boolean {
+    if (Array.isArray(value)) {
+      return value.some(item => this.referencesAnyParameter(item, parameterNames));
+    }
+    if (!value || typeof value !== 'object') return false;
+    const node = value as Record<string, unknown>;
+    if (
+      node.kind === 'variable' &&
+      typeof node.name === 'string' &&
+      parameterNames.has(node.name)
+    ) return true;
+    return Object.values(node).some(child => this.referencesAnyParameter(child, parameterNames));
   }
 
   private isComparableType(t: MathType): boolean {
@@ -1100,6 +1169,28 @@ export class SemanticAnalyzer {
         return result;
       }
 
+      case 'interpolated_string': {
+        for (const part of node.parts) {
+          if (typeof part === 'string') continue;
+          const partType = this.resolveType(this.analyzeExpression(part));
+          if ('type' in part && part.type === 'void') {
+            this.error('No se puede interpolar una expresión sin valor');
+          } else if (
+            partType !== 'string' &&
+            partType !== 'bool' &&
+            partType !== 's32' &&
+            partType !== 'u32'
+          ) {
+            this.error(
+              `Tipo no compatible con interpolación: ${this.typeName(partType)}. ` +
+              'Se admiten string, bool, int/s32 y u32.',
+            );
+          }
+        }
+        node.type = 'string';
+        return 'string';
+      }
+
       case 'cast': {
         const from = this.resolveType(this.analyzeExpression(node.operand));
         node.oldType = from;
@@ -1207,8 +1298,90 @@ export class SemanticAnalyzer {
         if (sym.isFunctionDecl) {
           const overloads = sym.overloads!;
           let chosen: FunctionOverload | undefined;
-          for (const ov of overloads) if (this.argTypesMatchExact(ov.type.paramTypes, argTypes)) { chosen = ov; break; }
-          if (!chosen) for (const ov of overloads) if (this.argTypesMatchWithBridge(ov.type.paramTypes, argTypes)) { chosen = ov; break; }
+          const exactArity = overloads.filter(
+            ov => !ov.type.variadic &&
+              ov.type.paramTypes.length === argTypes.length &&
+              this.argTypesMatchExact(ov.type.paramTypes, argTypes),
+          );
+          const bridgedArity = exactArity.length > 0
+            ? []
+            : overloads.filter(
+              ov => !ov.type.variadic &&
+                ov.type.paramTypes.length === argTypes.length &&
+                this.argTypesMatchWithBridge(ov.type.paramTypes, argTypes),
+            );
+          if (exactArity.length > 0) chosen = exactArity[0];
+          else if (bridgedArity.length > 0) chosen = bridgedArity[0];
+
+          let optionalMatches: FunctionOverload[] = [];
+          if (!chosen) {
+            optionalMatches = overloads.filter(ov => {
+              if (ov.type.variadic) return false;
+              const requiredCount = ov.type.paramTypes.length - ov.defaultArgs.length;
+              return argTypes.length >= requiredCount &&
+                argTypes.length < ov.type.paramTypes.length &&
+                this.argTypesMatchStrict(
+                  ov.type.paramTypes.slice(0, argTypes.length),
+                  argTypes,
+                );
+            });
+            if (optionalMatches.length === 0) {
+              optionalMatches = overloads.filter(ov => {
+                if (ov.type.variadic) return false;
+                const requiredCount = ov.type.paramTypes.length - ov.defaultArgs.length;
+                return argTypes.length >= requiredCount &&
+                  argTypes.length < ov.type.paramTypes.length &&
+                  this.argTypesMatchExact(
+                    ov.type.paramTypes.slice(0, argTypes.length),
+                    argTypes,
+                  );
+              });
+            }
+            if (optionalMatches.length === 0) {
+              optionalMatches = overloads.filter(ov => {
+                if (ov.type.variadic) return false;
+                const requiredCount = ov.type.paramTypes.length - ov.defaultArgs.length;
+                return argTypes.length >= requiredCount &&
+                  argTypes.length < ov.type.paramTypes.length &&
+                  this.argTypesMatchWithBridge(
+                    ov.type.paramTypes.slice(0, argTypes.length),
+                    argTypes,
+                  );
+              });
+            }
+            if (optionalMatches.length === 1) chosen = optionalMatches[0];
+          }
+          if (!chosen && optionalMatches.length > 1) {
+            this.error(`Llamada ambigua a '${node.name}': varias sobrecargas aceptan esos argumentos`);
+            return 's32';
+          }
+          if (!chosen) {
+            const variadicMatches = (
+              matcher: (params: MathType[], args: MathType[]) => boolean,
+            ): FunctionOverload[] => overloads.filter(ov =>
+              this.variadicArgumentsMatch(
+                ov.type.paramTypes,
+                argTypes,
+                ov.type.variadic === true,
+                (param, arg) => matcher([param], [arg]),
+              ),
+            );
+            let matches = variadicMatches((params, args) =>
+              this.argTypesMatchStrict(params, args));
+            if (matches.length === 0) {
+              matches = variadicMatches((params, args) =>
+                this.argTypesMatchExact(params, args));
+            }
+            if (matches.length === 0) {
+              matches = variadicMatches((params, args) =>
+                this.argTypesMatchWithBridge(params, args));
+            }
+            if (matches.length === 1) chosen = matches[0];
+            else if (matches.length > 1) {
+              this.error(`Llamada ambigua a '${node.name}': varias sobrecargas variádicas aceptan esos argumentos`);
+              return 's32';
+            }
+          }
           if (!chosen) {
             this.error(
               `Ninguna sobrecarga de '${node.name}' coincide con ` +
@@ -1216,9 +1389,27 @@ export class SemanticAnalyzer {
             );
             return 's32';
           }
+          const missingCount = chosen.type.variadic
+            ? 0
+            : chosen.type.paramTypes.length - argTypes.length;
+          if (missingCount > 0) {
+            const defaults = chosen.defaultArgs.slice(-missingCount);
+            for (const defaultValue of defaults) {
+              const argument = structuredClone(defaultValue);
+              node.args.push(argument);
+              argTypes.push(this.resolveType(this.analyzeExpression(argument)));
+            }
+          }
+          const fixedCount = chosen.type.variadic
+            ? chosen.type.paramTypes.length - 1
+            : argTypes.length;
           for (let i = 0; i < argTypes.length; i++) {
             const at = argTypes[i];
-            const et = this.resolveType(chosen.type.paramTypes[i]);
+            const paramIndex = i < fixedCount ? i : chosen.type.paramTypes.length - 1;
+            const declaredType = this.resolveType(chosen.type.paramTypes[paramIndex]);
+            const et = i < fixedCount || !chosen.type.variadic
+              ? declaredType
+              : (declaredType as Extract<MathType, { kind: 'dynarray' }>).elementType;
             const bridge =
               (at === 'string' && (et === 's32' || et === 'u32')) ||
               (et === 'string' && (at === 's32' || at === 'u32'));
@@ -1229,8 +1420,17 @@ export class SemanticAnalyzer {
               );
             }
           }
+          if (chosen.type.variadic) {
+            const fixedArgs = node.args.slice(0, fixedCount);
+            const variadicArgs = node.args.slice(fixedCount);
+            const finalType = this.resolveType(
+              chosen.type.paramTypes[chosen.type.paramTypes.length - 1],
+            ) as Extract<MathType, { kind: 'dynarray' }>;
+            node.args = [...fixedArgs, this.makeVariadicArray(variadicArgs, finalType.elementType)];
+          }
           node.name = chosen.mangledName;
           node.paramTypes = chosen.type.paramTypes;
+          node.variadic = chosen.type.variadic;
           node.returnTypes = chosen.type.returnTypes;
           const returnType = chosen.type.returnTypes[0];
           if (returnType === undefined) { node.type = 'void'; return 's32'; }
@@ -1242,15 +1442,33 @@ export class SemanticAnalyzer {
           const calleeVar: MathNode = { kind: 'variable', name: node.name, type: 's32' };
           const calleeType = this.resolveType(this.analyzeExpression(calleeVar)) as FunctionType;
           const params = calleeType.paramTypes.map(t => this.resolveType(t));
-          if (argTypes.length !== params.length) {
+          if (!this.variadicArgumentsMatch(
+            params,
+            argTypes,
+            calleeType.variadic === true,
+            (param, arg) => {
+              const bridge =
+                (arg === 'string' && (param === 's32' || param === 'u32')) ||
+                (param === 'string' && (arg === 's32' || arg === 'u32'));
+              return this.isAssignableType(arg, param) || bridge;
+            },
+          )) {
             this.error(
-              `Llamada indirecta a '${node.name}': se esperaban ${params.length} ` +
-              `args, se recibieron ${argTypes.length}`
+              `Llamada indirecta a '${node.name}': la cantidad o los tipos de argumentos ` +
+              `no coinciden con la firma ` +
+              `[${params.map(t => this.typeName(t)).join(', ')}]` +
+              `${calleeType.variadic ? ' (variádica)' : ''}; ` +
+              `se recibieron ${argTypes.length} argumentos`
             );
             return 's32';
           }
           for (let i = 0; i < argTypes.length; i++) {
-            const at = argTypes[i]; const et = params[i];
+            const fixedCount = calleeType.variadic ? params.length - 1 : params.length;
+            const param = i < fixedCount ? params[i] : params[params.length - 1];
+            const et = i < fixedCount || !calleeType.variadic
+              ? param
+              : (param as Extract<MathType, { kind: 'dynarray' }>).elementType;
+            const at = argTypes[i];
             const bridge =
               (at === 'string' && (et === 's32' || et === 'u32')) ||
               (et === 'string' && (at === 's32' || at === 'u32'));
@@ -1261,11 +1479,20 @@ export class SemanticAnalyzer {
               );
             }
           }
+          if (calleeType.variadic) {
+            const fixedCount = params.length - 1;
+            const dynarray = params[params.length - 1] as Extract<MathType, { kind: 'dynarray' }>;
+            node.args = [
+              ...node.args.slice(0, fixedCount),
+              this.makeVariadicArray(node.args.slice(fixedCount), dynarray.elementType),
+            ];
+          }
           const c = node as any;
           c.kind = 'call_indirect';
           c.callee = calleeVar;
           c.paramTypes = calleeType.paramTypes;
           c.returnTypes = calleeType.returnTypes;
+          c.variadic = calleeType.variadic;
           const returnType = calleeType.returnTypes[0];
           delete c.name;
           if (returnType === undefined) { c.type = 'void'; return 's32'; }
@@ -1294,30 +1521,73 @@ export class SemanticAnalyzer {
                   argTypes.push(this.resolveType(this.analyzeExpression(arg)));
                 }
                 const expected = method.type.paramTypes.slice(1);
-
-                if (argTypes.length !== expected.length) {
+                const fixedCount = method.type.variadic ? expected.length - 1 : expected.length;
+                const requiredCount = fixedCount - method.defaultArgs.length;
+                const argumentMatches = (param: MathType, arg: MathType): boolean => {
+                  const bridge =
+                    (arg === 'string' && (param === 's32' || param === 'u32')) ||
+                    (param === 'string' && (arg === 's32' || arg === 'u32'));
+                  return this.isAssignableType(arg, param) || bridge;
+                };
+                const matchesArguments = method.type.variadic
+                  ? this.variadicArgumentsMatch(expected, argTypes, true, argumentMatches)
+                  : argTypes.length >= requiredCount &&
+                    argTypes.length <= expected.length &&
+                    expected.slice(0, argTypes.length).every((param, index) =>
+                      argumentMatches(param, argTypes[index]));
+                if (!matchesArguments ||
+                    (!method.type.variadic && argTypes.length > expected.length) ||
+                    argTypes.length < requiredCount) {
                   this.error(
                     `Método '${sa.fieldName}' de '${baseType.name}': ` +
-                    `se esperaban ${expected.length} argumentos, ` +
+                    (method.type.variadic
+                      ? `se esperaban al menos ${requiredCount} argumentos, `
+                      : `se esperaban entre ${requiredCount} y ${expected.length} argumentos, `) +
                     `se recibieron ${argTypes.length}`
                   );
                   return 's32';
                 }
+                const missingCount = method.type.variadic
+                  ? 0
+                  : expected.length - argTypes.length;
+                if (missingCount > 0) {
+                  for (const defaultValue of method.defaultArgs.slice(-missingCount)) {
+                    const argument = structuredClone(defaultValue);
+                    node.args.push(argument);
+                    argTypes.push(this.resolveType(this.analyzeExpression(argument)));
+                  }
+                }
                 for (let i = 0; i < argTypes.length; i++) {
-                  if (!this.isAssignableType(argTypes[i], expected[i])) {
+                  const declaredType = expected[i < fixedCount ? i : expected.length - 1];
+                  const expectedType = i < fixedCount || !method.type.variadic
+                    ? declaredType
+                    : (declaredType as Extract<MathType, { kind: 'dynarray' }>).elementType;
+                  const bridge =
+                    (argTypes[i] === 'string' && (expectedType === 's32' || expectedType === 'u32')) ||
+                    (expectedType === 'string' && (argTypes[i] === 's32' || argTypes[i] === 'u32'));
+                  if (!this.isAssignableType(argTypes[i], expectedType) && !bridge) {
                     this.error(
                       `Argumento ${i} de '${sa.fieldName}': se esperaba ` +
-                      `${this.typeName(expected[i])}, se obtuvo ${this.typeName(argTypes[i])}`
+                      `${this.typeName(expectedType)}, se obtuvo ${this.typeName(argTypes[i])}`
                     );
                   }
                 }
 
+                let methodArgs = [...node.args];
+                if (method.type.variadic) {
+                  const lastType = expected[expected.length - 1] as Extract<MathType, { kind: 'dynarray' }>;
+                  methodArgs = [
+                    ...node.args.slice(0, fixedCount),
+                    this.makeVariadicArray(node.args.slice(fixedCount), lastType.elementType),
+                  ];
+                }
                 const newCall: any = node;
                 newCall.kind = 'call';
                 newCall.name = method.mangledName;
-                newCall.args = [sa.base, ...node.args];
+                newCall.args = [sa.base, ...methodArgs];
                 newCall.paramTypes = method.type.paramTypes;
                 newCall.returnTypes = method.type.returnTypes;
+                newCall.variadic = method.type.variadic;
                 newCall.type = method.type.returnTypes[0] ?? 'void';
                 return newCall.type;
               }
@@ -1335,18 +1605,36 @@ export class SemanticAnalyzer {
         }
         const fnType = calleeType as FunctionType;
         const params = fnType.paramTypes.map(t => this.resolveType(t));
-
-        if (node.args.length !== params.length) {
+        const argTypes = node.args.map(arg =>
+          this.resolveType(this.analyzeExpression(arg)));
+        const matchesArguments = this.variadicArgumentsMatch(
+          params,
+          argTypes,
+          fnType.variadic === true,
+          (param, arg) => {
+            const bridge =
+              (arg === 'string' && (param === 's32' || param === 'u32')) ||
+              (param === 'string' && (arg === 's32' || arg === 'u32'));
+            return this.isAssignableType(arg, param) || bridge;
+          },
+        );
+        if (!matchesArguments) {
           this.error(
-            `Llamada indirecta: se esperaban ${params.length} argumentos, ` +
+            `Llamada indirecta: cantidad o tipos de argumentos incompatibles con ` +
+            `la firma [${params.map(t => this.typeName(t)).join(', ')}]` +
+            `${fnType.variadic ? ' (variádica)' : ''}; ` +
             `se recibieron ${node.args.length}`
           );
           return 's32';
         }
 
-        for (let i = 0; i < node.args.length; i++) {
-          const at = this.resolveType(this.analyzeExpression(node.args[i]));
-          const et = params[i];
+        const fixedCount = fnType.variadic ? params.length - 1 : params.length;
+        for (let i = 0; i < argTypes.length; i++) {
+          const declaredType = params[i < fixedCount ? i : params.length - 1];
+          const et = i < fixedCount || !fnType.variadic
+            ? declaredType
+            : (declaredType as Extract<MathType, { kind: 'dynarray' }>).elementType;
+          const at = argTypes[i];
           const bridge =
             (at === 'string' && (et === 's32' || et === 'u32')) ||
             (et === 'string' && (at === 's32' || at === 'u32'));
@@ -1358,8 +1646,16 @@ export class SemanticAnalyzer {
           }
         }
 
+        if (fnType.variadic) {
+          const dynarray = params[params.length - 1] as Extract<MathType, { kind: 'dynarray' }>;
+          node.args = [
+            ...node.args.slice(0, fixedCount),
+            this.makeVariadicArray(node.args.slice(fixedCount), dynarray.elementType),
+          ];
+        }
         node.paramTypes = fnType.paramTypes;
         node.returnTypes = fnType.returnTypes;
+        node.variadic = fnType.variadic;
         const returnType = fnType.returnTypes[0];
         if (returnType === undefined) { node.type = 'void'; return 's32'; }
         node.type = returnType;
@@ -1751,6 +2047,7 @@ export class SemanticAnalyzer {
       kind: 'function',
       paramTypes: valueParams,
       returnTypes,
+      variadic: fullFnType.variadic,
     };
 
     (node as any).kind = 'closure';
@@ -1799,6 +2096,14 @@ export class SemanticAnalyzer {
     return true;
   }
 
+  private argTypesMatchStrict(params: MathType[], args: MathType[]): boolean {
+    if (params.length !== args.length) return false;
+    for (let i = 0; i < params.length; i++) {
+      if (!this.typesEqual(this.resolveType(args[i]), this.resolveType(params[i]))) return false;
+    }
+    return true;
+  }
+
   private argTypesMatchWithBridge(params: MathType[], args: MathType[]): boolean {
     if (params.length !== args.length) return false;
     for (let i = 0; i < params.length; i++) {
@@ -1811,6 +2116,45 @@ export class SemanticAnalyzer {
       if (!bridge) return false;
     }
     return true;
+  }
+
+  private variadicArgumentsMatch(
+    params: MathType[],
+    args: MathType[],
+    variadic: boolean,
+    matches: (param: MathType, arg: MathType) => boolean,
+  ): boolean {
+    if (!variadic) {
+      if (params.length !== args.length) return false;
+      return params.every((param, index) =>
+        matches(this.resolveType(param), this.resolveType(args[index])));
+    }
+    if (params.length === 0) return false;
+    const last = this.resolveType(params[params.length - 1]);
+    if (typeof last !== 'object' || last.kind !== 'dynarray') return false;
+    const fixedCount = params.length - 1;
+    if (args.length < fixedCount) return false;
+    if (args.length > fixedCount) {
+      const variadicType = this.resolveType(args[fixedCount]);
+      for (let i = fixedCount + 1; i < args.length; i++) {
+        if (!this.typesEqual(variadicType, this.resolveType(args[i]))) return false;
+      }
+    }
+    for (let i = 0; i < fixedCount; i++) {
+      if (!matches(this.resolveType(params[i]), this.resolveType(args[i]))) return false;
+    }
+    for (let i = fixedCount; i < args.length; i++) {
+      if (!matches(last.elementType, this.resolveType(args[i]))) return false;
+    }
+    return true;
+  }
+
+  private makeVariadicArray(args: MathNode[], elementType: MathType): MathNode {
+    return {
+      kind: 'array_literal',
+      elements: args,
+      type: { kind: 'dynarray', elementType },
+    };
   }
 
   private inferBinaryType(op: string, leftType: MathType, rightType: MathType): MathType {
@@ -1954,7 +2298,7 @@ export class SemanticAnalyzer {
     }
     if (type.kind === 'function') {
       return {
-        kind: 'function',
+        ...type,
         paramTypes: type.paramTypes.map(t => this.resolveType(t, seen)),
         returnTypes: type.returnTypes.map(t => this.resolveType(t, seen)),
       };

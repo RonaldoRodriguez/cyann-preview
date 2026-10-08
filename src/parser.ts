@@ -4,7 +4,7 @@ import { formatDiagnostic } from './diagnostics';
 import { createConstNode } from './constants';
 import {
   MathNode, MathType, CallNode, StructLiteralNode, CallIndirectNode,
-  PatternNode, MakeArrayNode, SizeOfNode,
+  PatternNode, MakeArrayNode, SizeOfNode, InterpolatedStringNode,
 } from './types';
 
 // ─── Nodos ────────────────────────────────────────────────────────────────
@@ -40,11 +40,12 @@ export interface AssignNode { kind: 'assign'; target: MathNode; expr: MathNode; 
 export interface FunctionDefNode {
   kind: 'function_def';
   name: string;
-  params: { name: string; type: MathType; uniqueName?: string }[];
+  params: { name: string; type: MathType; uniqueName?: string; defaultValue?: MathNode; variadic?: boolean }[];
   returnTypes: MathType[];
   body: StatementNode[];
   mangledName?: string;
   receiver?: MathType;
+  receiverTypes?: MathType[];
   exported?: boolean;
   exportName?: string;
   wasmExport?: boolean;
@@ -123,7 +124,9 @@ export interface ImportDeclNode {
 export interface ModuleImportNode {
   kind: 'module_import';
   path: string;
-  symbol: string;
+  symbol?: string;
+  alias?: string;
+  exported?: boolean;
 }
 
 export type StatementNode = (
@@ -159,12 +162,16 @@ export class Parser {
   }
 
   private error(msg: string): never {
+    this.errorAt(this.currentToken, msg);
+  }
+
+  private errorAt(token: Token, msg: string): never {
     throw new Error(formatDiagnostic({
       message: msg,
       location: {
-        filePath: this.currentToken.filePath,
-        line: this.currentToken.line,
-        column: this.currentToken.column,
+        filePath: token.filePath,
+        line: token.line,
+        column: token.column,
       },
     }));
   }
@@ -224,9 +231,10 @@ export class Parser {
         return this.parseLegacyHostImportDecl();
       }
       if (this.currentToken.type === 'IDENTIFIER') {
-        const receiver = this.parseGoTypeName();
+        const receivers = [this.parseGoTypeName()];
+        while (this.matchToken('SYMBOL', ',')) receivers.push(this.parseGoTypeName());
         this.expectToken('SYMBOL', ']');
-        return this.parseMethodDef(receiver);
+        return this.parseMethodDef(receivers);
       }
 
       this.error('Se esperaba el nombre de un tipo para declarar un método');
@@ -237,6 +245,14 @@ export class Parser {
     if (this.check('KEYWORD', 'export')) {
       if (this._blockDepth !== 0) this.error("'export' solo se permite en el nivel superior");
       this.advance();
+      if (this.check('KEYWORD', 'import')) {
+        const declaration = this.parseImportStatement();
+        if (declaration.kind !== 'module_import' || !declaration.alias) {
+          this.error("'export import' requiere importar un módulo con alias");
+        }
+        declaration.exported = true;
+        return declaration;
+      }
       if (this.check('KEYWORD', 'func')) {
         const fn = this.parseFunctionDef();
         fn.exported = true;
@@ -275,7 +291,7 @@ export class Parser {
     if (this.currentToken.value === 'return') return this.parseReturnStatement();
 
     if (this.currentToken.type === 'IDENTIFIER') {
-      const name = this.currentToken.value;
+      let name = this.currentToken.value;
       this.advance();
 
       // ¿Etiqueta de loop? `nombre: for ...`
@@ -287,6 +303,7 @@ export class Parser {
         }
       }
 
+      name = this.parseQualifiedNameTailFrom(name);
       return this.parseStatementStartingWithIdentifier(name);
     }
 
@@ -334,11 +351,26 @@ export class Parser {
     this.expectToken('KEYWORD', 'import');
     if (this.matchToken('KEYWORD', 'host')) return this.parseHostImportDecl();
     const importPath = this.expectToken('STRING');
+    if (this.matchToken('KEYWORD', 'as')) {
+      const alias = this.expectToken('IDENTIFIER');
+      this.matchToken('SYMBOL', ';');
+      return { kind: 'module_import', path: importPath, alias };
+    }
     this.expectToken('SYMBOL', ':');
     this.expectToken('SYMBOL', ':');
-    const symbol = this.expectToken('IDENTIFIER');
+    const symbol = this.parseQualifiedNameTail();
     this.matchToken('SYMBOL', ';');
     return { kind: 'module_import', path: importPath, symbol };
+  }
+
+  private parseQualifiedNameTail(): string {
+    let name = this.expectToken('IDENTIFIER');
+    while (this.currentToken.value === ':' && this.peekNextToken().value === ':') {
+      this.advance();
+      this.advance();
+      name += `::${this.expectToken('IDENTIFIER')}`;
+    }
+    return name;
   }
 
   private parseHostImportDecl(): ImportDeclNode {
@@ -438,20 +470,51 @@ export class Parser {
     return [];
   }
 
+  private parseFunctionParameters(): {
+    name: string;
+    type: MathType;
+    defaultValue?: MathNode;
+    variadic?: boolean;
+  }[] {
+    const params: {
+      name: string;
+      type: MathType;
+      defaultValue?: MathNode;
+      variadic?: boolean;
+    }[] = [];
+    if (this.currentToken.value === ')') return params;
+
+    for (;;) {
+      if (params.some(param => param.variadic)) {
+        this.error('El parámetro variádico debe ser el último');
+      }
+      const paramName = this.expectToken('IDENTIFIER');
+      const variadic = this.currentToken.value === '.';
+      if (variadic) {
+        this.expectToken('SYMBOL', '.');
+        this.expectToken('SYMBOL', '.');
+        this.expectToken('SYMBOL', '.');
+      }
+      const type = this.parseGoTypeName();
+      const defaultValue = this.matchToken('SYMBOL', '=') ? this.parseExpression() : undefined;
+      if (variadic && defaultValue) {
+        this.error('El parámetro variádico no puede tener un valor por defecto');
+      }
+      if (params.some(param => param.defaultValue) && !defaultValue) {
+        this.error('Los parámetros con valor por defecto deben ir al final');
+      }
+      params.push({ name: paramName, type, defaultValue, variadic });
+      if (!this.matchToken('SYMBOL', ',')) break;
+    }
+    return params;
+  }
+
   private parseFunctionDef(): FunctionDefNode {
     this.expectToken('KEYWORD', 'func');
     const name = this.expectToken('IDENTIFIER');
 
     this.expectToken('SYMBOL', '(');
-    const params: { name: string; type: MathType }[] = [];
-    if (this.currentToken.value !== ')') {
-      for (; ;) {
-        const paramName = this.expectToken('IDENTIFIER');
-        const paramType = this.parseGoTypeName();
-        params.push({ name: paramName, type: paramType });
-        if (!this.matchToken('SYMBOL', ',')) break;
-      }
-    }
+    const params = this.parseFunctionParameters();
     const closeParenLine = this.currentToken.line;
     this.expectToken('SYMBOL', ')');
 
@@ -463,20 +526,12 @@ export class Parser {
     return { kind: 'function_def', name, params, returnTypes, body };
   }
 
-  private parseMethodDef(receiver: MathType): FunctionDefNode {
+  private parseMethodDef(receivers: MathType[]): FunctionDefNode {
     this.expectToken('KEYWORD', 'func');
     const name = this.expectToken('IDENTIFIER');
 
     this.expectToken('SYMBOL', '(');
-    const params: { name: string; type: MathType }[] = [];
-    if (this.currentToken.value !== ')') {
-      for (; ;) {
-        const paramName = this.expectToken('IDENTIFIER');
-        const paramType = this.parseGoTypeName();
-        params.push({ name: paramName, type: paramType });
-        if (!this.matchToken('SYMBOL', ',')) break;
-      }
-    }
+    const params = this.parseFunctionParameters();
     const closeParenLine = this.currentToken.line;
     this.expectToken('SYMBOL', ')');
 
@@ -485,7 +540,7 @@ export class Parser {
       returnTypes = this.parseReturnTypes();
     }
     const body = this.parseBlock();
-    return { kind: 'function_def', name, params, returnTypes, body, receiver };
+    return { kind: 'function_def', name, params, returnTypes, body, receiverTypes: receivers };
   }
 
   private parseTypeOrStructDef(): StructDefNode | TypeAliasNode {
@@ -806,9 +861,14 @@ export class Parser {
       this.error(`Se esperaba un tipo, se encontró '${this.currentToken.value}'`);
     }
 
-    const typeName = this.currentToken.value;
+    let typeName = this.currentToken.value;
     const typeLine = this.currentToken.line;
     this.advance();
+    while (this.currentToken.value === ':' && this.peekNextToken().value === ':') {
+      this.advance();
+      this.advance();
+      typeName += `::${this.expectToken('IDENTIFIER')}`;
+    }
 
     let type: MathType;
 
@@ -1168,6 +1228,7 @@ export class Parser {
     }
     else if (this.matchToken('NUMBER')) node = createConstNode(token.value);
     else if (this.matchToken('STRING')) node = { kind: 'string', type: 'string', value: token.value };
+    else if (this.matchToken('TEMPLATE')) node = this.parseInterpolatedString(token);
     else if (this.matchToken('BOOLEAN')) node = { kind: 'bool', type: 'bool', value: token.value === 'true' };
     else if (this.matchToken('KEYWORD', 'null')) node = { kind: 'const', type: 'null', value: -1 };
     else if (this.matchToken('SYMBOL', '(')) {
@@ -1193,9 +1254,10 @@ export class Parser {
       }
     }
     else if (this.matchToken('IDENTIFIER')) {
-      if (this.currentToken.value === '(') node = this.parseCallAfterName(token.value);
-      else if (this.currentToken.value === '{' && this._noStructLiteral === 0) node = this.parseStructCallAfterName(token.value);
-      else node = { kind: 'variable', name: token.value, type: 's32' };
+      const name = this.parseQualifiedNameTailFrom(token.value);
+      if (this.currentToken.value === '(') node = this.parseCallAfterName(name);
+      else if (this.currentToken.value === '{' && this._noStructLiteral === 0) node = this.parseStructCallAfterName(name);
+      else node = { kind: 'variable', name, type: 's32' };
     }
     else this.error(`Expresión no válida: '${token.value}'`);
 
@@ -1207,6 +1269,103 @@ export class Parser {
     }
     return node;
   }
+
+  private parseInterpolatedString(token: Token): MathNode {
+    if (!token.terminated) this.errorAt(token, 'String interpolado sin cerrar');
+
+    const parts: Array<string | MathNode> = [];
+    let text = '';
+    const flushText = (): void => {
+      if (text.length > 0) parts.push(text);
+      text = '';
+    };
+
+    for (let index = 0; index < token.value.length;) {
+      const char = token.value[index];
+      const next = token.value[index + 1];
+      if (char === '{' && next === '{') {
+        text += '{';
+        index += 2;
+        continue;
+      }
+      if (char === '}' && next === '}') {
+        text += '}';
+        index += 2;
+        continue;
+      }
+      if (char === '}') {
+        this.errorAt(token, "Llave '}' sin escapar en string interpolado; usa '}}' para escribirla literalmente");
+      }
+      if (char !== '{') {
+        text += char;
+        index++;
+        continue;
+      }
+
+      flushText();
+      const expressionStart = index + 1;
+      let cursor = expressionStart;
+      let depth = 1;
+      let quote = '';
+      while (cursor < token.value.length && depth > 0) {
+        const current = token.value[cursor];
+        if (quote) {
+          if (current === '\\') cursor += 2;
+          else {
+            if (current === quote) quote = '';
+            cursor++;
+          }
+          continue;
+        }
+        if (current === '"' || current === "'") {
+          quote = current;
+          cursor++;
+        } else if (current === '{') {
+          depth++;
+          cursor++;
+        } else if (current === '}') {
+          depth--;
+          cursor++;
+        } else {
+          cursor++;
+        }
+      }
+      if (depth !== 0) this.errorAt(token, "Falta '}' en expresión interpolada");
+
+      const expressionSource = token.value.slice(expressionStart, cursor - 1).trim();
+      if (expressionSource.length === 0) this.errorAt(token, 'La expresión interpolada no puede estar vacía');
+      try {
+        const parser = new Parser(new Lexer(expressionSource));
+        const expression = parser.parseExpression();
+        if (parser.currentToken.type !== 'EOF') {
+          this.errorAt(token, 'Hay contenido adicional en la expresión interpolada');
+        }
+        parts.push(expression);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.errorAt(token, `Expresión interpolada inválida: ${message.replace(/^<source>:\d+:\d+: error: /, '')}`);
+      }
+      index = cursor;
+    }
+    flushText();
+
+    if (parts.length === 0) return { kind: 'string', type: 'string', value: '' };
+    if (parts.length === 1 && typeof parts[0] === 'string') {
+      return { kind: 'string', type: 'string', value: parts[0] };
+    }
+    return { kind: 'interpolated_string', parts, type: 'string' } as InterpolatedStringNode;
+  }
+
+  private parseQualifiedNameTailFrom(name: string): string {
+    let qualifiedName = name;
+    while (this.currentToken.value === ':' && this.peekNextToken().value === ':') {
+      this.advance();
+      this.advance();
+      qualifiedName += `::${this.expectToken('IDENTIFIER')}`;
+    }
+    return qualifiedName;
+  }
+
   // StructLiteralNode
   private parseCallAfterName(name: string): CallNode {
     this.expectToken('SYMBOL', '(');

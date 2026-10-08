@@ -1,0 +1,7 @@
+import "lib/namespace_root.cyn" as root
+
+func main() {
+    root::level::private_api::next_score()
+}
+
+main()

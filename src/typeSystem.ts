@@ -161,6 +161,7 @@ export function typesEqual(a: MathType, b: MathType): boolean {
         );
     }
     if (a.kind === 'function' && b.kind === 'function') {
+      if ((a.variadic ?? false) !== (b.variadic ?? false)) return false;
       if (a.paramTypes.length !== b.paramTypes.length) return false;
       for (let i = 0; i < a.paramTypes.length; i++) {
         if (!typesEqual(a.paramTypes[i], b.paramTypes[i])) return false;

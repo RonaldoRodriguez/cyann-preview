@@ -1,0 +1,8 @@
+func no_value() {
+}
+
+func main() {
+    var invalid string = $"void={no_value()}"
+}
+
+main()

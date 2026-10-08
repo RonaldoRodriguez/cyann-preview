@@ -1,0 +1,5 @@
+func invalid(first int = 1, required int) {}
+
+func main() {}
+
+main()
