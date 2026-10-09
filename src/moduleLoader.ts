@@ -304,7 +304,7 @@ export class ModuleLoader {
     const global = module.program.body.find(
       (item): item is Extract<StatementNode, { kind: 'var_decl' | 'const_decl' }> =>
         (item.kind === 'var_decl' || item.kind === 'const_decl') &&
-        item.exported &&
+        item.exported === true &&
         (item.exportName ?? item.name) === symbol,
     );
     if (global) return { kind: 'global', name: global.name };
@@ -312,7 +312,7 @@ export class ModuleLoader {
     const type = module.program.body.find(
       (item): item is Extract<StatementNode, { kind: 'struct_def' | 'type_alias' }> =>
         (item.kind === 'struct_def' || item.kind === 'type_alias') &&
-        item.exported &&
+        item.exported === true &&
         (item.exportName ?? item.name) === symbol,
     );
     if (type) return { kind: 'type', name: type.name };
