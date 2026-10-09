@@ -20,14 +20,14 @@ func main() {
     var view *IoVec = raw
     view.data = 41
     view.len = 9
-    check(mem_read32(raw), 41, "typed struct view over arena memory")
+    check(__unsafe__mem_read32(raw,0), 41, "typed struct view over arena memory")
     check(view.len, 9, "pointer field access uses struct offsets")
 
     var typed *IoVec = arena_for_type(IoVec)
     typed.data = 73
-    check(mem_read32(typed as *int), 73, "arena_for_type returns typed pointer")
+    check(__unsafe__mem_read32(typed as *int,0), 73, "arena_for_type returns typed pointer")
     typed.len = 19
-    check(mem_read32((typed as *int) + 1), 19, "pointer arithmetic scales by element size")
+    check(__unsafe__mem_read32((typed as *int) + 1,0), 19, "pointer arithmetic scales by element size")
     var erased *int = typed
     var restored *IoVec = erased as *IoVec
     check(restored.data, 73, "explicit pointer reinterpret cast")

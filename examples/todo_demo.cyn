@@ -414,8 +414,8 @@ func sum_with_region() int {
         var i int = 0
         for i < 10 {
             var p *int = arena_alloc(16)
-            mem_write32(p, i)
-            total = total + mem_read32(p)
+            __unsafe__mem_write32(p, i,0)
+            total = total + __unsafe__mem_read32(p,0)
             i = i + 1
         }
     }
@@ -472,11 +472,11 @@ func classify_magic(x int) int {
 // Serializa un Item: [id: i32, title_ptr: i32, done: i32].
 func serialize_item(it Item) *int {
     var buf *int = arena_alloc(12)
-    mem_write32(buf,     it.id)
-    mem_write32(buf + 1, it.title as int)
+    __unsafe__mem_write32(buf,     it.id,0)
+    __unsafe__mem_write32(buf + 1, it.title as int,0)
     var done int = 0
     if it.done { done = 1 }
-    mem_write32(buf + 2, done)
+    __unsafe__mem_write32(buf + 2, done,0)
     return buf
 }
 
@@ -489,8 +489,8 @@ func session_hex_mem() {
 
     var it Item = Item{id: 42, title: "hello", done: true}
     var buf *int = serialize_item(it)
-    check(mem_read32(buf), 42, "id serializado")
-    check(mem_read32(buf + 2), 1, "done serializado")
+    check(__unsafe__mem_read32(buf,0), 42, "id serializado")
+    check(__unsafe__mem_read32(buf + 2,0), 1, "done serializado")
 
     var x int = 0b10101010
     check(x & 0x0F, 0x0A, "x & 0x0F = 0x0A")

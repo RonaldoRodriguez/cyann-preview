@@ -13,7 +13,7 @@ func _write(fd int, ptr *int, len int, _nwrite *int) {
 
 func print_char(c int) {
     var _nwrite = arena_alloc(4)
-    mem_write8(_nwrite, c)
+    __unsafe__mem_write8(_nwrite, c,0)
     _write(1, _nwrite, 1, _nwrite)
 }
 

@@ -6,3 +6,4 @@ demos/*.wasm
 *.log
 .vscode/
 .idea/
+test/

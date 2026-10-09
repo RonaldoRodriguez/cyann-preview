@@ -1441,14 +1441,32 @@ export class CodeGenerator {
       b.memoryCopy();
     }, ['dst', 'src', 'n']);
 
-    m.addFunction('mem_read32', ['i32'], 'i32', (b) => { b.getLocal('addr'); b.i32Load(); }, ['addr']);
-    m.addFunction('mem_write32', ['i32', 'i32'], null, (b) => {
-      b.getLocal('addr'); b.getLocal('v'); b.i32Store();
-    }, ['addr', 'v']);
-    m.addFunction('mem_read8', ['i32'], 'i32', (b) => { b.getLocal('addr'); b.i32Load8U(); }, ['addr']);
-    m.addFunction('mem_write8', ['i32', 'i32'], null, (b) => {
-      b.getLocal('addr'); b.getLocal('v'); b.i32Store8();
-    }, ['addr', 'v']);
+    m.addFunction('__unsafe__mem_read32', ['i32', 'i32'], 'i32', (b) => { 
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add()
+      b.i32Load(); 
+    }, ['addr', 'offset']);
+    m.addFunction('__unsafe__mem_write32', ['i32', 'i32', 'i32'], null, (b) => {
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add()
+      b.getLocal('v'); 
+      b.i32Store();
+    }, ['addr', 'v', 'offset']);
+    m.addFunction('__unsafe__mem_read8', ['i32', 'i32'], 'i32', (b) => { 
+      b.getLocal('addr');
+      b.getLocal('offset');
+      b.i32Add() 
+      b.i32Load8U();
+    }, ['addr', 'offset']);
+    m.addFunction('__unsafe__mem_write8', ['i32', 'i32', 'i32'], null, (b) => {
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add() 
+      b.getLocal('v'); 
+      b.i32Store8();
+    }, ['addr', 'v', 'offset']);
 
     m.addFunction('str_len', ['i32'], 'i32', (b) => {
       b.getLocal('s'); b.i32Const(4); b.i32Sub(); b.i32Load();

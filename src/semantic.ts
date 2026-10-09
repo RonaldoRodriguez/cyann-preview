@@ -182,10 +182,10 @@ export class SemanticAnalyzer {
       { name: 'arena_restore', params: [pointer],              ret: null          },
       { name: 'arena_alloc',   params: [s32],                  ret: pointer       },
       { name: 'memcpy',        params: [pointer, pointer, s32],ret: null          },
-      { name: 'mem_read32',    params: [pointer],              ret: s32           },
-      { name: 'mem_write32',   params: [pointer, s32],         ret: null          },
-      { name: 'mem_read8',     params: [pointer],              ret: s32           },
-      { name: 'mem_write8',    params: [pointer, s32],         ret: null          },
+      { name: '__unsafe__mem_read32',    params: [pointer, s32],              ret: s32           },
+      { name: '__unsafe__mem_write32',   params: [pointer, s32, s32],         ret: null          },
+      { name: '__unsafe__mem_read8',     params: [pointer, s32],              ret: s32           },
+      { name: '__unsafe__mem_write8',    params: [pointer, s32, s32],         ret: null          },
       { name: 'str_len',       params: ['string'],      ret: s32            },
       { name: 'str_concat',    params: ['string', 'string'], ret: 'string'  },
       { name: 'str_eq',        params: ['string', 'string'], ret: 'bool'    },
@@ -1822,7 +1822,7 @@ export class SemanticAnalyzer {
           return 's32';
         }
 
-        //console.log(baseType)
+        //cast no soportado
 
         const field = baseType.fields.find(c => c.name === node.fieldName);
         if (field) {

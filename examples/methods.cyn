@@ -74,7 +74,7 @@ func eprintln(s string) {
 func print_char(c int) {
     // Reusamos el iovec: escribimos 1 byte desde un buffer de 4
     // bytes que también vive para siempre.
-    mem_write8(_nwrite, c)
+    __unsafe__mem_write8(_nwrite, c, 0)
     _write(1, _nwrite, 1)
 }
 
@@ -116,7 +116,7 @@ func eprint_int(n int) {
         var digits [12]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         var i int = 0
         for n > 0 { digits[i] = 48 + (n % 10); n = n / 10; i++ }
-        for i > 0 { i--; mem_write8(_nwrite, digits[i]); _write(2, _nwrite, 1) }
+        for i > 0 { i--; __unsafe__mem_write8(_nwrite, digits[i],0); _write(2, _nwrite, 1) }
     }
 }
 
