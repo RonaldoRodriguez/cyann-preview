@@ -20,7 +20,7 @@ const analyzedProgramBrand: unique symbol = Symbol('analyzedProgram');
 export interface AnalyzedProgram extends ProgramNode {
   readonly [analyzedProgramBrand]: true;
 }
-
+// Identificador no definido
 // ─── Acumulador de diagnósticos ───────────────────────────────────────────
 class DiagnosticBag {
   private errors: Diagnostic[] = [];
@@ -1302,6 +1302,8 @@ export class SemanticAnalyzer {
         for (const arg of node.args) argTypes.push(this.resolveType(this.analyzeExpression(arg)));
 
         if (!this.scopeControl.has(node.name)) {
+          //console.log(this.scopeControl.has("p"), node.name)
+          //console.log(this.scopeControl.lookup(node.name), node.name)
           this.error(`Identificador no definido: '${node.name}'`);
           return 's32';
         }

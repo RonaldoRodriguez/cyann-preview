@@ -435,8 +435,13 @@ export class ModuleLoader {
         typeof node.name === 'string' &&
         !isLocal(node.name)
       ) {
-        node.name = this.resolveQualifiedName(module, node.name, 'function') ??
-          module.functionNames.get(node.name) ?? node.name;
+        const functionName = this.resolveQualifiedName(module, node.name, 'function') ??
+          module.functionNames.get(node.name);
+        const globalName = node.kind === 'call'
+          ? this.resolveQualifiedName(module, node.name, 'global') ??
+            module.globalNames.get(node.name)
+          : undefined;
+        node.name = functionName ?? globalName ?? node.name;
       } else if (node.kind === 'struct_literal' && typeof node.structName === 'string') {
         node.structName = module.typeNames.get(node.structName) ??
           this.resolveQualifiedName(module, node.structName, 'type') ??
