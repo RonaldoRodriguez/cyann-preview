@@ -425,6 +425,22 @@ export class ModuleLoader {
       if (!value || typeof value !== 'object') return;
       const node = value as Record<string, unknown>;
 
+      if (
+        node.kind === 'call' &&
+        node.name === 'key_values' &&
+        Array.isArray(node.args) &&
+        node.args[0] &&
+        typeof node.args[0] === 'object' &&
+        (node.args[0] as Record<string, unknown>).kind === 'variable'
+      ) {
+        const typeArgument = node.args[0] as Record<string, unknown>;
+        if (typeof typeArgument.name === 'string') {
+          typeArgument.name = module.typeNames.get(typeArgument.name) ??
+            this.resolveQualifiedName(module, typeArgument.name, 'type') ??
+            typeArgument.name;
+        }
+      }
+
       if (node.kind === 'variable' && typeof node.name === 'string' && !isLocal(node.name)) {
         node.name = this.resolveQualifiedName(module, node.name, 'function') ??
           this.resolveQualifiedName(module, node.name, 'global') ??

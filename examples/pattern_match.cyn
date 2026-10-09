@@ -30,7 +30,6 @@ func classify(n int) int {
     case 1, 2, 3:  return 200
     case _:        return 999
     }
-    return -1
 }
 
 func session_primitives() {
@@ -105,7 +104,6 @@ func boolCode(b bool) int {
     case true:  return 1
     case false: return 0
     }
-    return -1
 }
 
 func session_strings_bools() {

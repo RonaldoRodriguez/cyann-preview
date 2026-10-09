@@ -1,0 +1,41 @@
+@include("lib/std.cyn")
+
+type UserId int
+
+type Person struct {
+    nombre string
+    edad int
+    activo bool
+    id UserId
+    scores []int
+    format func(string) string
+}
+
+type PublicPerson Person
+
+func main() {
+    var fields = key_values(Person)
+    if len(fields) != 6 {
+        panic("key_values debe incluir todos los campos")
+    }
+    if fields[0][0] != "nombre" || fields[0][1] != "string" {
+        panic("key_values debe devolver el nombre y tipo declarados")
+    }
+    if fields[1][0] != "edad" || fields[1][1] != "int" {
+        panic("key_values debe preservar int en lugar de s32")
+    }
+    if fields[3][1] != "UserId" || fields[4][1] != "[]int" {
+        panic("key_values debe preservar alias y tipos compuestos")
+    }
+    if fields[5][1] != "func(string) string" {
+        panic("key_values debe describir firmas de función")
+    }
+
+    var aliasedFields = key_values(PublicPerson)
+    if len(aliasedFields) != len(fields) || aliasedFields[1][1] != "int" {
+        panic("key_values debe aceptar alias de structs")
+    }
+    println("key_values: TODO OK")
+}
+
+main()

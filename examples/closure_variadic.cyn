@@ -1,0 +1,23 @@
+@include("lib/std.cyn")
+
+type IntSum func(int, ...int) int
+
+func main() {
+    var sum IntSum = func(initial int, values ...int) int {
+        var total int = initial
+        for value in values {
+            total = total + value
+        }
+        return total
+    }
+
+    if sum(0) != 0 {
+        panic("closure variádica debe aceptar cero argumentos variádicos")
+    }
+    if sum(0, 1, 2, 3, 4) != 10 {
+        panic("closure variádica debe empaquetar todos los argumentos")
+    }
+    println("closure variádica: TODO OK")
+}
+
+main()

@@ -1,0 +1,7 @@
+func maybe(value bool) int {
+    if value {
+        return 1
+    }
+}
+
+maybe(true)

@@ -55,7 +55,7 @@ export interface FunctionDefNode {
 export interface StructDefNode {
   kind: 'struct_def';
   name: string;
-  fields: { name: string; type: MathType }[];
+  fields: { name: string; type: MathType; declaredTypeName?: string }[];
   exported?: boolean;
   exportName?: string;
 }
@@ -146,6 +146,7 @@ export class Parser {
   private _noStructLiteral = 0;
   private _loopStack: { supportsContinue: boolean; label?: string }[] = [];
   private _blockDepth = 0;
+  private _lastParsedTypeName = '';
 
   constructor(lexer: Lexer) { this.lexer = lexer; this.advance(); }
 
@@ -489,12 +490,7 @@ export class Parser {
         this.error('El parámetro variádico debe ser el último');
       }
       const paramName = this.expectToken('IDENTIFIER');
-      const variadic = this.currentToken.value === '.';
-      if (variadic) {
-        this.expectToken('SYMBOL', '.');
-        this.expectToken('SYMBOL', '.');
-        this.expectToken('SYMBOL', '.');
-      }
+      const variadic = this.parseVariadicMarker();
       const type = this.parseGoTypeName();
       const defaultValue = this.matchToken('SYMBOL', '=') ? this.parseExpression() : undefined;
       if (variadic && defaultValue) {
@@ -507,6 +503,14 @@ export class Parser {
       if (!this.matchToken('SYMBOL', ',')) break;
     }
     return params;
+  }
+
+  private parseVariadicMarker(): boolean {
+    if (this.currentToken.value !== '.') return false;
+    this.expectToken('SYMBOL', '.');
+    this.expectToken('SYMBOL', '.');
+    this.expectToken('SYMBOL', '.');
+    return true;
   }
 
   private parseFunctionDef(): FunctionDefNode {
@@ -549,11 +553,15 @@ export class Parser {
 
     if (this.matchToken('KEYWORD', 'struct')) {
       this.expectToken('SYMBOL', '{');
-      const fields: { name: string; type: MathType }[] = [];
+      const fields: { name: string; type: MathType; declaredTypeName?: string }[] = [];
       while (this.currentToken.value !== '}') {
         const fieldName = this.expectToken('IDENTIFIER');
         const fieldType = this.parseGoTypeName();
-        fields.push({ name: fieldName, type: fieldType });
+        fields.push({
+          name: fieldName,
+          type: fieldType,
+          declaredTypeName: this._lastParsedTypeName,
+        });
         this.matchToken('SYMBOL', ';');
       }
       this.expectToken('SYMBOL', '}');
@@ -836,12 +844,15 @@ export class Parser {
 
   private parseGoTypeName(): MathType {
     if (this.matchToken('SYMBOL', '*')) {
-      return { kind: 'pointer', targetType: this.parseGoTypeName() };
+      const targetType = this.parseGoTypeName();
+      this._lastParsedTypeName = `*${this._lastParsedTypeName}`;
+      return { kind: 'pointer', targetType };
     }
 
     if (this.matchToken('SYMBOL', '[')) {
       if (this.matchToken('SYMBOL', ']')) {
         const elementType = this.parseGoTypeName();
+        this._lastParsedTypeName = `[]${this._lastParsedTypeName}`;
         return { kind: 'dynarray', elementType };
       }
 
@@ -854,6 +865,7 @@ export class Parser {
 
       this.expectToken('SYMBOL', ']');
       const elementType = this.parseGoTypeName();
+      this._lastParsedTypeName = `[${length}]${this._lastParsedTypeName}`;
       return { kind: 'array', elementType, length };
     }
 
@@ -871,35 +883,54 @@ export class Parser {
     }
 
     let type: MathType;
+    let sourceTypeName = typeName;
 
     if (typeName === 'fn' || typeName === 'func') {
       this.expectToken('SYMBOL', '(');
 
       const paramTypes: MathType[] = [];
+      const paramSourceNames: string[] = [];
+      let variadic = false;
       if (this.currentToken.value !== ')') {
-        do {
-          paramTypes.push(this.parseGoTypeName());
-        } while (this.matchToken('SYMBOL', ','));
+        for (;;) {
+          if (variadic) this.error('El parámetro variádico debe ser el último');
+          variadic = this.parseVariadicMarker();
+          const paramType = this.parseGoTypeName();
+          paramSourceNames.push(
+            `${variadic ? '...' : ''}${this._lastParsedTypeName}`
+          );
+          paramTypes.push(
+            variadic ? { kind: 'dynarray', elementType: paramType } : paramType
+          );
+          if (!this.matchToken('SYMBOL', ',')) break;
+        }
       }
 
       this.expectToken('SYMBOL', ')');
 
-      const returnTypes = this.isTypeStart()
-        ? [this.parseGoTypeName()]
-        : [];
+      let returnTypes: MathType[] = [];
+      let returnSourceName = '';
+      if (this.isTypeStart()) {
+        returnTypes = [this.parseGoTypeName()];
+        returnSourceName = ` ${this._lastParsedTypeName}`;
+      }
 
-      type = { kind: 'function', paramTypes, returnTypes };
+      sourceTypeName = `func(${paramSourceNames.join(', ')})${returnSourceName}`;
+      type = { kind: 'function', paramTypes, returnTypes, variadic };
     } else if (typeName === 'struct') {
       this.expectToken('SYMBOL', '{');
       const fields: { name: string; type: MathType }[] = [];
+      const fieldSourceNames: string[] = [];
       while (this.currentToken.value !== '}') {
         const fieldName = this.expectToken('IDENTIFIER');
         //this.expectToken('SYMBOL', ':');
         const fieldType = this.parseGoTypeName();
+        fieldSourceNames.push(`${fieldName} ${this._lastParsedTypeName}`);
         fields.push({ name: fieldName, type: fieldType });
         this.matchToken('SYMBOL', ';');
       }
       this.expectToken('SYMBOL', '}');
+      sourceTypeName = `struct { ${fieldSourceNames.join('; ')} }`;
       type = {
         kind: 'struct',
         name: '',
@@ -958,6 +989,7 @@ export class Parser {
       }
     }
 
+    this._lastParsedTypeName = sourceTypeName;
     return this.parseArraySuffix(type, typeLine);
   }
 
@@ -969,6 +1001,7 @@ export class Parser {
 
       if (this.matchToken('SYMBOL', ']')) {
         type = { kind: 'dynarray', elementType: type };
+        this._lastParsedTypeName += '[]';
         continue;
       }
 
@@ -981,6 +1014,7 @@ export class Parser {
 
       this.expectToken('SYMBOL', ']');
       type = { kind: 'array', elementType: type, length };
+      this._lastParsedTypeName += `[${length}]`;
     }
 
     return type;
@@ -1197,15 +1231,13 @@ export class Parser {
 
     else if (this.matchToken('KEYWORD', 'func')) {
       this.expectToken('SYMBOL', '(');
-      const params: { name: string; type: MathType }[] = [];
-      if (this.currentToken.value !== ')') {
-        for (; ;) {
-          const pn = this.expectToken('IDENTIFIER');
-          const pt = this.parseGoTypeName();
-          params.push({ name: pn, type: pt });
-          if (!this.matchToken('SYMBOL', ',')) break;
-        }
+      const parsedParams = this.parseFunctionParameters();
+      if (parsedParams.some(param => param.defaultValue !== undefined)) {
+        this.error('Los parámetros con valor por defecto no están permitidos en funciones literales');
       }
+      const params = parsedParams.map(({ name, type, variadic }) => ({
+        name, type, variadic,
+      }));
       const closeParenLine = this.currentToken.line;
       this.expectToken('SYMBOL', ')');
 
@@ -1214,7 +1246,7 @@ export class Parser {
         returnTypes = this.parseReturnTypes();
       }
       const body = this.parseBlock();
-      node = { kind: 'function_literal', params, returnTypes, body } as any;
+      node = { kind: 'function_literal', params, returnTypes, body };
     }
     else if (this.matchToken('KEYWORD', 'struct')) {
       this.expectToken('SYMBOL', '{');

@@ -1,0 +1,15 @@
+import "lib/std.cyn" as std
+import "lib/public_api.cyn" as api
+
+func main() {
+    var fields = key_values(api::Point)
+    if len(fields) != 2 {
+        std::panic("key_values debe reflejar structs importados")
+    }
+    if fields[0][0] != "x" || fields[0][1] != "int" {
+        std::panic("key_values debe conservar los nombres de campos importados")
+    }
+    std::println("key_values module: TODO OK")
+}
+
+main()

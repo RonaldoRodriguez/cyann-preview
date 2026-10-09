@@ -1,0 +1,5 @@
+var sum = func(values ...int) int {
+    return 0
+}
+
+sum(1, "dos")

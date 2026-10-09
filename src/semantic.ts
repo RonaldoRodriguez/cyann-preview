@@ -1,4 +1,7 @@
-import { ProgramNode, StatementNode, FunctionDefNode, ImportDeclNode, MultiDeclNode } from './parser';
+import {
+  ProgramNode, StatementNode, FunctionDefNode, StructDefNode,
+  ImportDeclNode, MultiDeclNode,
+} from './parser';
 import {
   MathNode, MathType, FunctionType, StructType, StructField,
   FunctionLiteralNode, ClosureNode, CaptureAccessNode,
@@ -157,6 +160,7 @@ export class SemanticAnalyzer {
   private captureStack: CaptureFrame[] = [];
   private capturedNamesStack: Set<string>[] = [];
   private typeAliases = new Map<string, MathType>();
+  private structDefinitions = new Map<string, StructDefNode>();
 
   private methodsByStruct = new Map<string, Map<string, FunctionOverload>>();
   private syntheticCounter = 0;
@@ -270,10 +274,25 @@ export class SemanticAnalyzer {
         if (thenR && elseR) return true;
       }
 
-      if (s.kind === 'switch' && s.defaultBody !== null) {
+      if (s.kind === 'switch') {
         const casesReturn = s.cases.every(c => this.allPathsReturn(c.body));
-        const defaultReturns = this.allPathsReturn(s.defaultBody);
-        if (casesReturn && defaultReturns) return true;
+        const hasWildcard = s.cases.some(c =>
+          c.patterns.some(pattern => pattern.kind === 'wildcard')
+        );
+        const boolCases = new Set(
+          s.cases.flatMap(c =>
+            c.patterns.flatMap(pattern =>
+              pattern.kind === 'bool' ? [pattern.value] : []
+            )
+          )
+        );
+        const isExhaustive =
+          s.defaultBody !== null ||
+          hasWildcard ||
+          (s.exprType === 'bool' && boolCases.has(true) && boolCases.has(false));
+        const defaultReturns = s.defaultBody === null ||
+          this.allPathsReturn(s.defaultBody);
+        if (isExhaustive && casesReturn && defaultReturns) return true;
       }
 
       if (s.kind === 'region' && this.allPathsReturn(s.body)) return true;
@@ -434,6 +453,7 @@ export class SemanticAnalyzer {
     this.currentLocation = undefined;
 
     this.typeAliases.clear();
+    this.structDefinitions.clear();
     this.collectTypeAliases(program.body);
     this.collectStructs(program.body);
     this.collectFunctions(program.body);
@@ -462,6 +482,7 @@ export class SemanticAnalyzer {
       if (s.kind !== 'struct_def') continue;
 
       this.withLocation(s, () => {
+        this.structDefinitions.set(s.name, s);
         this.typeRegistry.registerStruct(
           s.name,
           s.fields.map(f => {
@@ -1286,6 +1307,51 @@ export class SemanticAnalyzer {
           node.resolvedBuiltin = 'is_same';
           return 'bool';
         }
+        if (node.name === 'key_values' && !this.scopeControl.has('key_values')) {
+          if (node.args.length !== 1 || node.args[0].kind !== 'variable') {
+            this.error('key_values() espera el nombre de un tipo struct');
+            return 's32';
+          }
+
+          const typeName = node.args[0].name;
+          if (
+            !this.typeAliases.has(typeName) &&
+            !this.structDefinitions.has(typeName)
+          ) {
+            this.error(`key_values(): '${typeName}' no es un tipo struct conocido`);
+            return 's32';
+          }
+          const declaredType = this.typeAliases.get(typeName) ??
+            ({ kind: 'struct', name: typeName, fields: [], size: 0, align: 1 } as StructType);
+          const resolvedType = this.resolveType(declaredType);
+          if (typeof resolvedType !== 'object' || resolvedType.kind !== 'struct') {
+            this.error(`key_values(): '${typeName}' no es un tipo struct`);
+            return 's32';
+          }
+
+          const definition = this.structDefinitions.get(resolvedType.name);
+          if (!definition) {
+            this.error(`key_values(): no se encontró la definición de '${typeName}'`);
+            return 's32';
+          }
+
+          node.resolvedBuiltin = {
+            kind: 'key_values',
+            fields: definition.fields.map(field => ({
+              name: field.name,
+              typeName: field.declaredTypeName ?? this.declaredTypeName(field.type),
+            })),
+          };
+          node.paramTypes = [];
+          node.type = {
+            kind: 'dynarray',
+            elementType: {
+              kind: 'dynarray',
+              elementType: 'string',
+            },
+          };
+          return node.type;
+        }
         if (node.name === 'len' && node.args.length === 1 && !this.scopeControl.has('len')) {
           const at = this.resolveType(this.analyzeExpression(node.args[0]));
           if (typeof at !== 'object' || (at.kind !== 'array' && at.kind !== 'dynarray')) {
@@ -1679,11 +1745,19 @@ export class SemanticAnalyzer {
       case 'function_literal': {
         const fnNode = node as FunctionLiteralNode;
 
-        const paramTypes = fnNode.params.map(p => this.resolveType(p.type));
+        const paramTypes = fnNode.params.map(p => {
+          const type = this.resolveType(p.type);
+          return p.variadic ? { kind: 'dynarray' as const, elementType: type } : type;
+        });
         const returnTypes = fnNode.returnTypes
           ? fnNode.returnTypes.map(t => this.resolveType(t))
           : [];
-        const fnType: FunctionType = { kind: 'function', paramTypes, returnTypes };
+        const fnType: FunctionType = {
+          kind: 'function',
+          paramTypes,
+          returnTypes,
+          variadic: fnNode.params.some(param => param.variadic),
+        };
 
         const name = `__lambda_${this.lambdaCounter++}`;
         this.scopeControl.declareFunction(name, name, fnType, false);
@@ -1698,7 +1772,11 @@ export class SemanticAnalyzer {
         this.scopeControl.pushScope();
 
         for (const p of fnNode.params) {
-          const uniqueName = this.scopeControl.declare(p.name, this.resolveType(p.type), true, false);
+          const paramType = this.resolveType(p.type);
+          const declaredType = p.variadic
+            ? { kind: 'dynarray' as const, elementType: paramType }
+            : paramType;
+          const uniqueName = this.scopeControl.declare(p.name, declaredType, true, false);
           p.uniqueName = uniqueName;
           this.slotLevels.set(uniqueName, prevLevel);
         }
@@ -2295,6 +2373,7 @@ export class SemanticAnalyzer {
             `Ciclo de alias detectado: ${[...s, type.name].join(' → ')}`
           );
         }
+
         s.add(type.name);
         return this.resolveType(rawTarget, s);
       }
@@ -2334,6 +2413,35 @@ export class SemanticAnalyzer {
       };
     }
     return type;
+  }
+
+  private declaredTypeName(type: MathType): string {
+    if (typeof type === 'string') return type;
+    switch (type.kind) {
+      case 'struct':
+        return type.name || `struct { ${type.fields
+          .map(field => `${field.name} ${this.declaredTypeName(field.type)}`)
+          .join('; ')} }`;
+      case 'pointer':
+        return `*${this.declaredTypeName(type.targetType)}`;
+      case 'array':
+        return `[${type.length}]${this.declaredTypeName(type.elementType)}`;
+      case 'dynarray':
+        return `[]${this.declaredTypeName(type.elementType)}`;
+      case 'function': {
+        const params = type.paramTypes.map((param, index) => {
+          if (type.variadic && index === type.paramTypes.length - 1 &&
+              typeof param === 'object' && param.kind === 'dynarray') {
+            return `...${this.declaredTypeName(param.elementType)}`;
+          }
+          return this.declaredTypeName(param);
+        });
+        const returns = type.returnTypes.map(result => this.declaredTypeName(result));
+        return `func(${params.join(', ')})${returns.length === 0
+          ? ''
+          : ` ${returns.length === 1 ? returns[0] : `(${returns.join(', ')})`}`}`;
+      }
+    }
   }
 
   private structTypeFromRegistry(name: string): StructType {

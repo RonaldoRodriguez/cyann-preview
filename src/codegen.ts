@@ -452,6 +452,25 @@ export class ExpressionCompiler {
           this.b.i32Const(at.length);
           return 's32';
         }
+        if (typeof c.resolvedBuiltin === 'object' &&
+            c.resolvedBuiltin.kind === 'key_values') {
+          const stringType = 'string' as const;
+          const rowType = { kind: 'dynarray' as const, elementType: stringType };
+          const resultType = { kind: 'dynarray' as const, elementType: rowType };
+          const result: ArrayLiteralNode = {
+            kind: 'array_literal',
+            type: resultType,
+            elements: c.resolvedBuiltin.fields.map(field => ({
+              kind: 'array_literal',
+              type: rowType,
+              elements: [
+                { kind: 'string', type: 'string', value: field.name },
+                { kind: 'string', type: 'string', value: field.typeName },
+              ],
+            })),
+          };
+          return this.compileValue(result);
+        }
 
         if (this.envFunctions.has(c.name)) {
           this.b.i32Const(0);

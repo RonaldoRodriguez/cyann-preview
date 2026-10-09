@@ -121,7 +121,10 @@ export interface CallNode {
   returnTypes?: MathType[];
   variadic?: boolean;
   importedFrom?: string;
-  resolvedBuiltin?: 'is_same' | { kind: 'len'; argumentType: ArrayType | DynArrayType };
+  resolvedBuiltin?:
+    | 'is_same'
+    | { kind: 'len'; argumentType: ArrayType | DynArrayType }
+    | { kind: 'key_values'; fields: { name: string; typeName: string }[] };
 }
 
 export interface FunctionRefNode {
@@ -182,7 +185,7 @@ export interface IncrementNode {
 
 export interface FunctionLiteralNode {
   kind: 'function_literal';
-  params: { name: string; type: MathType; uniqueName?: string }[];
+  params: { name: string; type: MathType; uniqueName?: string; variadic?: boolean }[];
   returnTypes: MathType[];
   body: any[];
 }
