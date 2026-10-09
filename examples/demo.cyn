@@ -1,0 +1,23 @@
+import "../examples/lib/std.cyn" as std
+
+func Vec3(e ...int) struct {data []int; size func()int; capacity int} {
+	if len(e) > 3 {std::panic("Error...")}
+	var __cp = len(e) * 2;
+	return struct {
+		data: e, 
+		size: func() int {
+			return len(e)
+		}, 
+		capacity: __cp
+	} 
+}
+
+var p = Vec3(1, 2, 3)
+std::println(p.size())
+
+
+
+
+
+
+//alacran oso la vaca ardilla

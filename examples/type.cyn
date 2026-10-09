@@ -1,14 +1,14 @@
 import host("wasi_snapshot_preview1", "fd_write")
-func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
+func _wasi_fd_write(fd int, iovs *int, iovs_len int, nwritten *int) int
 
 
 type Person struct {
     ptr int
     len int
 }
-func _write(fd int, ptr int, len int, _nwrite int) {
-    const _iovec Person = Person{ptr: ptr, len: len}
-    _wasi_fd_write(fd, (_iovec as int), 1, _nwrite)
+func _write(fd int, ptr *int, len int, _nwrite *int) {
+    const _iovec Person = Person{ptr: ptr as int, len: len}
+    _wasi_fd_write(fd, (_iovec as *int), 1, _nwrite)
 }
 
 func print_char(c int) {

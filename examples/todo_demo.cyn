@@ -222,7 +222,7 @@ func todo_stats() Stats {
     return Stats{total: n, completed: done, pending: n - done}
 }
 
-func todo_stats_anon() struct { total: int; done: int; todo: int } {
+func todo_stats_anon() struct { total int; done int; todo int } {
     var s Stats = todo_stats()
     return struct { total: s.total, done: s.completed, todo: s.pending }
 }
@@ -320,7 +320,7 @@ func session_stats() {
     check(s.completed, 2, "completed = 2")
     check(s.pending, 2, "pending = 2")
 
-    var a struct { total: int; done: int; todo: int } = todo_stats_anon()
+    var a struct { total int; done int; todo int } = todo_stats_anon()
     check(a.total, 4, "anon.total = 4")
     check(a.done, 2, "anon.done = 2")
     check(a.todo, 2, "anon.todo = 2")
@@ -413,7 +413,7 @@ func sum_with_region() int {
     region {
         var i int = 0
         for i < 10 {
-            var p int = arena_alloc(16)
+            var p *int = arena_alloc(16)
             mem_write32(p, i)
             total = total + mem_read32(p)
             i = i + 1
@@ -470,13 +470,13 @@ func classify_magic(x int) int {
 }
 
 // Serializa un Item: [id: i32, title_ptr: i32, done: i32].
-func serialize_item(it Item) int {
-    var buf int = arena_alloc(12)
+func serialize_item(it Item) *int {
+    var buf *int = arena_alloc(12)
     mem_write32(buf,     it.id)
-    mem_write32(buf + 4, it.title as int)
+    mem_write32(buf + 1, it.title as int)
     var done int = 0
     if it.done { done = 1 }
-    mem_write32(buf + 8, done)
+    mem_write32(buf + 2, done)
     return buf
 }
 
@@ -488,9 +488,9 @@ func session_hex_mem() {
     check(classify_magic(0), 0, "default")
 
     var it Item = Item{id: 42, title: "hello", done: true}
-    var buf int = serialize_item(it)
+    var buf *int = serialize_item(it)
     check(mem_read32(buf), 42, "id serializado")
-    check(mem_read32(buf + 8), 1, "done serializado")
+    check(mem_read32(buf + 2), 1, "done serializado")
 
     var x int = 0b10101010
     check(x & 0x0F, 0x0A, "x & 0x0F = 0x0A")
@@ -523,11 +523,11 @@ func session_overloads() {
 // SESSION 11: Anonymous structs
 // ═════════════════════════════════════════════════════════
 
-func make_point(x int, y int) struct { x: int; y: int } {
+func make_point(x int, y int) struct { x int; y int } {
     return struct { x: x, y: y }
 }
 
-func point_sum(p struct { x: int; y: int }) int {
+func point_sum(p struct { x int; y int }) int {
     return p.x + p.y
 }
 
@@ -538,10 +538,10 @@ func session_anon_structs() {
     check(p.x, 3, "p.x")
     check(p.y, 4, "p.y")
 
-    var q struct { x: int; y: int } = struct { x: 10, y: 20 }
+    var q struct { x int; y int } = struct { x: 10, y: 20 }
     check(point_sum(q), 30, "point_sum(q)")
 
-    var r struct { x: int; y: int } = make_point(1, 2)
+    var r struct { x int; y int } = make_point(1, 2)
     check(r.x, 1, "make_point(1,2).x")
     check(r.y, 2, "make_point(1,2).y")
 }

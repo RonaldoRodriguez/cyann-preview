@@ -3,7 +3,7 @@ import {
   MathNode, MathType, FunctionType, StructType, StructField,
   FunctionLiteralNode, ClosureNode, CaptureAccessNode,
   CapturedVar, VariableNode, ArithmeticType, PatternNode,
-  MakeArrayNode, CallNode, StructAccessNode, SizeOfNode,
+  MakeArrayNode, CallNode, StructAccessNode, SizeOfNode, ArenaForTypeNode,
 } from './types';
 import { mangleFunctionName, functionParamsEqual, mangleType } from './mangler';
 import { SourceLocation } from './sourceMap';
@@ -176,15 +176,16 @@ export class SemanticAnalyzer {
 
   private registerBuiltins(): void {
     const s32: MathType = 's32';
+    const pointer: MathType = { kind: 'pointer', targetType: s32 };
     const builtins: { name: string; params: MathType[]; ret: MathType | null }[] = [
-      { name: 'arena_save',    params: [],              ret: s32            },
-      { name: 'arena_restore', params: [s32],           ret: null           },
-      { name: 'arena_alloc',   params: [s32],           ret: s32            },
-      { name: 'memcpy',        params: [s32, s32, s32], ret: null           },
-      { name: 'mem_read32',    params: [s32],           ret: s32            },
-      { name: 'mem_write32',   params: [s32, s32],      ret: null           },
-      { name: 'mem_read8',     params: [s32],           ret: s32            },
-      { name: 'mem_write8',    params: [s32, s32],      ret: null           },
+      { name: 'arena_save',    params: [],                    ret: pointer       },
+      { name: 'arena_restore', params: [pointer],              ret: null          },
+      { name: 'arena_alloc',   params: [s32],                  ret: pointer       },
+      { name: 'memcpy',        params: [pointer, pointer, s32],ret: null          },
+      { name: 'mem_read32',    params: [pointer],              ret: s32           },
+      { name: 'mem_write32',   params: [pointer, s32],         ret: null          },
+      { name: 'mem_read8',     params: [pointer],              ret: s32           },
+      { name: 'mem_write8',    params: [pointer, s32],         ret: null          },
       { name: 'str_len',       params: ['string'],      ret: s32            },
       { name: 'str_concat',    params: ['string', 'string'], ret: 'string'  },
       { name: 'str_eq',        params: ['string', 'string'], ret: 'bool'    },
@@ -626,7 +627,7 @@ export class SemanticAnalyzer {
         this.checkEscape(stmt.expr, this.currentLevel, `:= '${stmt.name}'`);
         break;
       }
-// Ninguna sobrecarga de 
+
       case 'multi_decl': {
         const md = stmt as MultiDeclNode;
         const firstType = this.resolveType(this.analyzeExpression(md.expr));
@@ -823,10 +824,13 @@ export class SemanticAnalyzer {
           v => this.resolveType(this.analyzeExpression(v))
         );
         const expected = this.currentReturnTypes;
-
+        //console.log(">>", actualTypes)
         if (expected.length === 0) {
           if (actualTypes.length > 0) {
-            this.error('La función no debe retornar valores');
+            this.error(
+              'La función no espera retorno de valores ' +
+              actualTypes.map(e => this.typeName(e)).join(', ')
+            );
           }
         } else {
           if (actualTypes.length !== expected.length) {
@@ -1198,13 +1202,21 @@ export class SemanticAnalyzer {
         if (this.typesEqual(from, to)) return to;
         const stringBridge =
           (from === 'string' && (to === 's32' || to === 'u32')) ||
-          (to === 'string' && (from === 's32' || from === 'u32'));
+          (to === 'string' && (from === 's32' || from === 'u32')) ||
+          (from === 'string' && typeof to === 'object' && to.kind === 'pointer') ||
+          (to === 'string' && typeof from === 'object' && from.kind === 'pointer');
         if (stringBridge) return to;
         const boolBridge =
           (from === 'bool' && (to === 's32' || to === 'u32')) ||
           (to === 'bool' && (from === 's32' || from === 'u32'));
         if (boolBridge) return to;
         if (isArithmeticType(from) && isArithmeticType(to)) return to;
+        const fromPointer = typeof from === 'object' && from.kind === 'pointer';
+        const toPointer = typeof to === 'object' && to.kind === 'pointer';
+        const fromStruct = typeof from === 'object' && from.kind === 'struct';
+        const toStruct = typeof to === 'object' && to.kind === 'struct';
+        if (fromPointer && (toPointer || toStruct || isIntegerType(to))) return to;
+        if (toPointer && fromStruct) return to;
         if (typeof from === 'object' && from.kind ==='struct' &&  this._structCache.has(from.name) && (to === 's32')) return to;
         if ((from === 's32') &&  typeof to === 'object' && to.kind === 'struct' && this._structCache.has(to.name)) return to; 
         //if ((from === 's32') &&  typeof to === 'object' && to.kind === 'dynarray') return to; 
@@ -1935,6 +1947,14 @@ export class SemanticAnalyzer {
         return 's32';
       }
 
+      case 'arena_for_type': {
+        const allocation = node as ArenaForTypeNode;
+        const targetType = this.resolveType(allocation.targetType);
+        allocation.targetType = targetType;
+        allocation.type = { kind: 'pointer', targetType };
+        return allocation.type;
+      }
+
       default: return 's32';
     }
   }
@@ -2159,6 +2179,14 @@ export class SemanticAnalyzer {
 
   private inferBinaryType(op: string, leftType: MathType, rightType: MathType): MathType {
     if ((leftType === 'null' || rightType === 'null') && (op === '==' || op === '!=')) return 'bool';
+
+    const leftPointer = typeof leftType === 'object' && leftType.kind === 'pointer';
+    const rightPointer = typeof rightType === 'object' && rightType.kind === 'pointer';
+    const leftOffset = leftType === 's32' || leftType === 'u32';
+    const rightOffset = rightType === 's32' || rightType === 'u32';
+    if (leftPointer && rightOffset && (op === '+' || op === '-')) return leftType;
+    if (rightPointer && leftOffset && op === '+') return rightType;
+    if (leftPointer && rightPointer && (op === '==' || op === '!=')) return 'bool';
 
     if (typeof leftType === 'object' && leftType.kind === 'struct'
         && typeof rightType === 'object' && rightType.kind === 'struct'

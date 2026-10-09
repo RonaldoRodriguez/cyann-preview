@@ -20,7 +20,7 @@
 // una vez y la reutilizamos para cada escritura.
 
 import host("wasi_snapshot_preview1", "fd_write")
-func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
+func _wasi_fd_write(fd int, iovs *int, iovs_len int, nwritten *int) int
 
 import host("wasi_snapshot_preview1", "proc_exit")
 func _wasi_proc_exit(rval int)
@@ -31,21 +31,22 @@ func _wasi_proc_exit(rval int)
 // el "nwritten". Vive para siempre, nadie los libera. Es 12 bytes
 // en total: irrelevante.
 
-var _iovec   int = arena_alloc(8)
-var _nwrite  int = arena_alloc(4)
+type IoVec struct { data int; len int }
+var _iovec *IoVec = arena_for_type(IoVec)
+var _nwrite *int = arena_for_type(int)
 
 // ─── Escritura de bajo nivel ────────────────────────────────────
 
-func _write(fd int, ptr int, len int) {
-    mem_write32(_iovec + 0, ptr)
-    mem_write32(_iovec + 4, len)
+func _write(fd int, ptr *int, len int) {
+    _iovec.data = ptr as int
+    _iovec.len = len
     _wasi_fd_write(fd, _iovec, 1, _nwrite)
 }
 
 // ─── API pública ────────────────────────────────────────────────
 
 func print(s string) {
-    _write(1, s, str_len(s))
+    _write(1, s as *int, str_len(s))
 }
 
 func print(s int) {
@@ -62,7 +63,7 @@ func println(value int) {
 
 
 func eprint(s string) {
-    _write(2, s, str_len(s))
+    _write(2, s as *int, str_len(s))
 }
 
 func eprintln(s string) {

@@ -167,3 +167,4 @@ export class Lexer {
     return this.token('SYMBOL', this.nextChar(), startIndex, startLine, startColumn);
   }
 }
+

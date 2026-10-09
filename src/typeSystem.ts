@@ -197,7 +197,7 @@ export function isAssignableType(source: MathType, target: MathType): boolean {
   }
   if (typeof source === 'object' && source.kind === 'pointer' &&
       typeof target === 'object' && target.kind === 'pointer') {
-    return typesEqual(source.targetType, target.targetType);
+    return true;
   }
   if (typeof source === 'object' && source.kind === 'array' &&
       typeof target === 'object' && target.kind === 'dynarray') {

@@ -7,7 +7,7 @@ import {
   FunctionRefNode, ArithmeticType, StructType,
   StructLiteralNode, StructAccessNode, ArrayLiteralNode, ArrayAccessNode,
   CallIndirectNode, VariableNode, MakeArrayNode, CastNode, BinaryNode,
-  ClosureNode, CaptureAccessNode, PatternNode, SizeOfNode,
+  ClosureNode, CaptureAccessNode, PatternNode, SizeOfNode, ArenaForTypeNode,
 } from './types';
 import {
   StatementNode, FunctionDefNode, VarConstNode, ShortVarDeclNode,
@@ -17,7 +17,7 @@ import {
 } from './parser';
 import {
   sizeOfType, typesEqual, semanticToWasmType, maxArithmeticType,
-  signedness, width, arithInfo, isArithmeticType,
+  signedness, width, arithInfo, isArithmeticType, isIntegerType,
 } from './typeSystem';
 
 export type CompileResult = MathType | 'void';
@@ -54,7 +54,7 @@ function getStructType(t: MathType): StructType | null {
 function isArithType(t: MathType | undefined): t is ArithmeticType {
   return t !== undefined && isArithmeticType(t);
 }
-
+// Type mismatch: compuesto
 export function canConvertF64ToF32(value: number): boolean {
   if (!Number.isFinite(value)) return false;
   const f32 = Math.fround(value);
@@ -64,6 +64,8 @@ export function canConvertF64ToF32(value: number): boolean {
 export function tryImplicitConvert(b: FunctionIRBuilder, from: MathType, to: MathType): boolean {
   if (typesEqual(from, to)) return true;
   if (from === 'null' || to === 'null') return false;
+  if (typeof from === 'object' && from.kind === 'pointer' &&
+      typeof to === 'object' && to.kind === 'pointer') return true;
   if (typeof from !== 'string' || typeof to !== 'string') return false;
   if (from === 'string' || to === 'string' || from === 'bool' || to === 'bool') return false;
   const fi = arithInfo[from as ArithmeticType];
@@ -100,6 +102,9 @@ export function handleImplicitConversion(
   if (from === 'null' && typeof to === 'object' &&
       (to.kind === 'pointer' || to.kind === 'struct' ||
        to.kind === 'dynarray' || to.kind === 'function')) return;
+
+    if (typeof from === 'object' && from.kind === 'pointer' &&
+      typeof to === 'object' && to.kind === 'pointer') return;
 
   const fromStruct = getStructType(from);
   const toStructPointer = typeof to === 'object' && to.kind === 'pointer' ? getStructType(to.targetType) : null;
@@ -369,6 +374,17 @@ export class ExpressionCompiler {
         return 's32';
       }
 
+      case 'arena_for_type': {
+        const allocation = node as ArenaForTypeNode;
+        const allocationSize = typeof allocation.targetType === 'object' &&
+          allocation.targetType.kind === 'struct'
+          ? allocation.targetType.size
+          : sizeOfType(allocation.targetType);
+        this.b.i32Const(allocationSize);
+        this.b.callByName(RT_ALLOC);
+        return allocation.type;
+      }
+
       case 'make_array': {
         const n = node as MakeArrayNode;
         const es = sizeOfType(n.elementType!);
@@ -390,9 +406,22 @@ export class ExpressionCompiler {
         const to = c.newType;
         if (typesEqual(from, to)) return to;
         if ((from === 'string' && (to === 's32' || to === 'u32')) ||
-            (to === 'string' && (from === 's32' || from === 'u32'))) return to;
+          (to === 'string' && (from === 's32' || from === 'u32')) ||
+          (from === 'string' && typeof to === 'object' && to.kind === 'pointer') ||
+          (to === 'string' && typeof from === 'object' && from.kind === 'pointer')) return to;
         if ((from === 'bool' && (to === 's32' || to === 'u32')) ||
             (to === 'bool' && (from === 's32' || from === 'u32'))) return to;
+        const fromPointer = typeof from === 'object' && from.kind === 'pointer';
+        const toPointer = typeof to === 'object' && to.kind === 'pointer';
+        const fromStruct = typeof from === 'object' && from.kind === 'struct';
+        const toStruct = typeof to === 'object' && to.kind === 'struct';
+        if (fromPointer && (toPointer || toStruct)) return to;
+        if (fromPointer && isIntegerType(to)) {
+          if (to === 's64') this.b.i64ExtendI32S();
+          else if (to === 'u64') this.b.i64ExtendI32U();
+          return to;
+        }
+        if (toPointer && fromStruct) return to;
         if (typeof from === 'object' && from.kind ==='struct' && (to === 's32')) return to;
         if (typeof to === 'object' && to.kind ==='struct' && (from === 's32')) return to;
         if (typeof from === 'object' && from.kind ==='dynarray' && (to === 's32')) return to;
@@ -795,6 +824,42 @@ export class ExpressionCompiler {
         case '!=': this.b.i32Ne(); return 'bool';
         default: throw new Error(`Operación '${node.op}' no soportada entre bools`);
       }
+    }
+
+    const leftPointer = typeof lt === 'object' && lt.kind === 'pointer';
+    const rightPointer = typeof rt === 'object' && rt.kind === 'pointer';
+    if (leftPointer && rightPointer && (node.op === '==' || node.op === '!=')) {
+      pushOperands();
+      if (node.op === '==') this.b.i32Eq(); else this.b.i32Ne();
+      return 'bool';
+    }
+    const leftPointerOffset = lt === 's32' || lt === 'u32';
+    const rightPointerOffset = rt === 's32' || rt === 'u32';
+    if ((leftPointer && rightPointerOffset && (node.op === '+' || node.op === '-')) ||
+      (rightPointer && leftPointerOffset && node.op === '+')) {
+      const pointerType = (leftPointer ? lt : rt) as Extract<MathType, { kind: 'pointer' }>;
+      const elementSize = typeof pointerType.targetType === 'object' &&
+        pointerType.targetType.kind === 'struct'
+        ? pointerType.targetType.size
+        : sizeOfType(pointerType.targetType);
+      const pointerLocal = this.fresh('ptr_arith', 'i32');
+      const offsetLocal = this.fresh('ptr_offset', 'i32');
+      pushOperands();
+      if (leftPointer) {
+        this.b.setLocal(offsetLocal);
+        this.b.setLocal(pointerLocal);
+      } else {
+        this.b.setLocal(pointerLocal);
+        this.b.setLocal(offsetLocal);
+      }
+      this.b.getLocal(pointerLocal);
+      this.b.getLocal(offsetLocal);
+      if (elementSize !== 1) {
+        this.b.i32Const(elementSize);
+        this.b.i32Mul();
+      }
+      if (node.op === '-') this.b.i32Sub(); else this.b.i32Add();
+      return pointerType;
     }
 
     if (lt !== rt || !isArithType(lt)) {

@@ -4,7 +4,7 @@ import { formatDiagnostic } from './diagnostics';
 import { createConstNode } from './constants';
 import {
   MathNode, MathType, CallNode, StructLiteralNode, CallIndirectNode,
-  PatternNode, MakeArrayNode, SizeOfNode, InterpolatedStringNode,
+  PatternNode, MakeArrayNode, SizeOfNode, ArenaForTypeNode, InterpolatedStringNode,
 } from './types';
 
 // ─── Nodos ────────────────────────────────────────────────────────────────
@@ -894,7 +894,7 @@ export class Parser {
       const fields: { name: string; type: MathType }[] = [];
       while (this.currentToken.value !== '}') {
         const fieldName = this.expectToken('IDENTIFIER');
-        this.expectToken('SYMBOL', ':');
+        //this.expectToken('SYMBOL', ':');
         const fieldType = this.parseGoTypeName();
         fields.push({ name: fieldName, type: fieldType });
         this.matchToken('SYMBOL', ';');
@@ -1175,6 +1175,16 @@ export class Parser {
         const targetType = this.parseGoTypeName();
         node = { kind: 'size_of', targetType, identName, type: 's32' } as SizeOfNode;
       }
+    }
+    else if (this.matchToken('IDENTIFIER', 'arena_for_type')) {
+      this.expectToken('SYMBOL', '(');
+      const targetType = this.parseGoTypeName();
+      this.expectToken('SYMBOL', ')');
+      node = {
+        kind: 'arena_for_type',
+        targetType,
+        type: { kind: 'pointer', targetType },
+      } as ArenaForTypeNode;
     }
     else if (this.matchToken('KEYWORD', 'make')) {
       this.expectToken('SYMBOL', '(');

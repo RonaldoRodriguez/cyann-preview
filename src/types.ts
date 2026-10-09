@@ -229,6 +229,12 @@ export interface SizeOfNode {
   type: MathType;
 }
 
+export interface ArenaForTypeNode {
+  kind: 'arena_for_type';
+  targetType: MathType;
+  type: MathType;
+}
+
 export type MathNode =
   | ConstNode
   | VariableNode
@@ -250,7 +256,8 @@ export type MathNode =
   | FunctionLiteralNode
   | ClosureNode
   | CaptureAccessNode
-  | SizeOfNode;
+  | SizeOfNode
+  | ArenaForTypeNode;
 
 export interface MakeArrayNode {
   kind: 'make_array';

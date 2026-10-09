@@ -8,22 +8,23 @@
 // y utilidades de strings. Los enteros `int` son de 32 bits en wasm32.
 
 import host("wasi_snapshot_preview1", "fd_write")
-func _wasi_fd_write(fd int, iovs int, iovs_len int, nwritten int) int
+func _wasi_fd_write(fd int, iovs *int, iovs_len int, nwritten *int) int
 
 import host("wasi_snapshot_preview1", "proc_exit")
 func _wasi_proc_exit(rval int)
 
-var _iovec int = arena_alloc(8)
-var _nwrite int = arena_alloc(4)
+type IoVec struct { data int; len int }
+var _iovec *IoVec = arena_for_type(IoVec)
+var _nwrite *int = arena_for_type(int)
 
-func _write(fd int, ptr int, length int) {
-    mem_write32(_iovec, ptr)
-    mem_write32(_iovec + 4, length)
+func _write(fd int, ptr *int, length int) {
+    _iovec.data = ptr as int
+    _iovec.len = length
     _wasi_fd_write(fd, _iovec, 1, _nwrite)
 }
 
 export func print(value string) {
-    _write(1, value, str_len(value))
+    _write(1, value as *int, str_len(value))
 }
 
 export func print(value int) {
@@ -73,7 +74,7 @@ export func println(values ...bool) {
 }
 
 export func eprint(value string) {
-    _write(2, value, str_len(value))
+    _write(2, value as *int, str_len(value))
 }
 
 export func eprintln(value string) {
@@ -89,7 +90,7 @@ export func print_char(value int) {
 func _print_int(fd int, value int) {
     region {
         var text string = str_from_int(value)
-        _write(fd, text, str_len(text))
+        _write(fd, text as *int, str_len(text))
     }
 }
 
