@@ -182,33 +182,39 @@ export class SemanticAnalyzer {
     const s32: MathType = 's32';
     const pointer: MathType = { kind: 'pointer', targetType: s32 };
     const builtins: { name: string; params: MathType[]; ret: MathType | null }[] = [
-      { name: 'arena_save',    params: [],                    ret: pointer       },
-      { name: 'arena_restore', params: [pointer],              ret: null          },
-      { name: 'arena_alloc',   params: [s32],                  ret: pointer       },
-      { name: '__unsafe__mem_memcpy',        params: [pointer, pointer, s32],ret: null          },
-      { name: '__unsafe__mem_memcpyi',        params: [s32, s32, s32],ret: null          },
-      { name: '__unsafe__mem_read32',    params: [pointer, s32],              ret: s32           },
-      { name: '__unsafe__mem_read32i',    params: [s32, s32],              ret: s32           },
-      { name: '__unsafe__mem_write32',   params: [pointer, s32, s32],         ret: null          },
-      { name: '__unsafe__mem_write32i',   params: [s32, s32, s32],         ret: null          },
-      { name: '__unsafe__mem_read8',     params: [pointer, s32],              ret: s32           },
-      { name: '__unsafe__mem_write8',    params: [pointer, s32, s32],         ret: null          },
-      { name: '__unsafe__mem_read8i',     params: [s32, s32],              ret: s32           },
-      { name: '__unsafe__mem_write8i',    params: [s32, s32, s32],         ret: null          },
-      { name: 'str_len',       params: ['string'],      ret: s32            },
-      { name: 'str_concat',    params: ['string', 'string'], ret: 'string'  },
-      { name: 'str_eq',        params: ['string', 'string'], ret: 'bool'    },
-      { name: 'str_ne',        params: ['string', 'string'], ret: 'bool'    },
+        { name: 'arena_save',                 params: [],                     ret: pointer },
+        { name: 'arena_restore',              params: [pointer],              ret: null    },
+        { name: 'arena_alloc',                params: [s32],                  ret: pointer },
+        { name: '__unsafe__mem_memcpy',       params: [pointer, pointer, s32], ret: null    },
+        { name: '__unsafe__mem_memcpyi',      params: [s32, s32, s32],        ret: null    },
+        { name: '__unsafe__mem_read32',       params: [pointer, s32],         ret: s32     },
+        { name: '__unsafe__mem_read32i',      params: [s32, s32],             ret: s32     },
+        { name: '__unsafe__mem_write32',      params: [pointer, s32, s32],    ret: null    },
+        { name: '__unsafe__mem_write32i',     params: [s32, s32, s32],        ret: null    },
+        { name: '__unsafe__mem_read8',        params: [pointer, s32],         ret: s32     },
+        { name: '__unsafe__mem_write8',       params: [pointer, s32, s32],    ret: null    },
+        { name: '__unsafe__mem_read8i',       params: [s32, s32],             ret: s32     },
+        { name: '__unsafe__mem_write8i',      params: [s32, s32, s32],        ret: null    },
+        { name: 'str_len',                    params: ['string'],             ret: s32     },
+        { name: 'str_concat',                 params: ['string', 'string'],   ret: 'string'},
+        { name: 'str_eq',                     params: ['string', 'string'],   ret: 'bool'  },
+        { name: 'str_ne',                     params: ['string', 'string'],   ret: 'bool'  },
+        
+        // --- Nuevas funciones nativas del Heap y Expansión ---
+        { name: '__heap_grow',                params: [s32],                  ret: s32     },
+        { name: 'info_heap_start_ptr',        params: [],                     ret: pointer },
+        { name: 'info_heap_end_ptr',          params: [],                     ret: s32     },
     ];
+
     for (const b of builtins) {
-      const fnType: FunctionType = {
-        kind: 'function',
-        paramTypes: b.params,
-        returnTypes: b.ret ? [b.ret] : [],
-      };
-      this.scopeControl.declareFunction(b.name, b.name, fnType, true);
+        const fnType: FunctionType = {
+            kind: 'function',
+            paramTypes: b.params,
+            returnTypes: b.ret ? [b.ret] : [],
+        };
+        this.scopeControl.declareFunction(b.name, b.name, fnType, true);
     }
-  }
+}
 
   private isHeapType(t: MathType): boolean {
     if (t === 'string') return true;

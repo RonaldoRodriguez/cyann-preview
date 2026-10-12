@@ -1,0 +1,126 @@
+// json.cyn — Nodo polimórifco JSON y serialización completa
+import "std.cyn" as std
+import "heap.cyn" as heap
+import "map.cyn" as mymap
+import "map.cyn"::MapEntry
+import "vector.cyn" as vec
+
+export type JsonValue struct {
+    Type   int          // 0: String, 1: Number, 2: Array, 3: Object
+    IntVal int          // Para números o booleanos
+    StrVal *char        // Para cadenas de texto
+    VecVal *vec::Vector // Para arreglos JSON [...]
+    MapVal *mymap::Map  // Para objetos JSON {...}
+}
+
+// Sobrecarga 1: Recibe un entero (Number)
+export func JsonNew(val int) *JsonValue {
+    var node *JsonValue = heap::MyMalloc(size_of JsonValue as uint32) as *JsonValue
+    node.Type = 1
+    node.IntVal = val
+    node.StrVal = null as *char
+    node.VecVal = null as *vec::Vector
+    node.MapVal = null as *mymap::Map
+    return node
+}
+
+// Sobrecarga 2: Recibe un puntero a char (String)
+export func JsonNew(str *char) *JsonValue {
+    var node *JsonValue = heap::MyMalloc(size_of JsonValue as uint32) as *JsonValue
+    node.Type = 0
+    node.IntVal = 0
+    node.StrVal = str
+    node.VecVal = null as *vec::Vector
+    node.MapVal = null as *mymap::Map
+    return node
+}
+
+export func JsonNewArray() *JsonValue {
+    var node *JsonValue = heap::MyMalloc(size_of JsonValue as uint32) as *JsonValue
+    node.Type = 2
+    node.IntVal = 0
+    node.StrVal = null as *char
+    node.VecVal = vec::VectorNew(4)
+    node.MapVal = null as *mymap::Map
+    return node
+}
+
+export func JsonNewObject() *JsonValue {
+    var node *JsonValue = heap::MyMalloc(size_of JsonValue as uint32) as *JsonValue
+    node.Type = 3
+    node.IntVal = 0
+    node.StrVal = null as *char
+    node.VecVal = null as *vec::Vector
+    node.MapVal = mymap::MapNew(4)
+    return node
+}
+
+// Serialización recursiva a texto plano (JSON.stringify) con diagnóstico de mapa
+export func JsonStringify(node *JsonValue) {
+    if node == null {
+        std::print("null")
+        return
+    }
+
+    // Tipo 0: String
+    if node.Type == 0 {
+        std::print("\"")
+        std::print(node.StrVal)
+        std::print("\"")
+    } else {
+        // Tipo 1: Number / Boolean
+        if node.Type == 1 {
+            std::print(node.IntVal)
+        } else {
+            // Tipo 2: Array [...]
+            if node.Type == 2 {
+                std::print("[")
+                var i int = 0
+                var len int = vec::VectorLength(node.VecVal)
+                
+                for i < len {
+                    var elem *JsonValue = vec::VectorGet(node.VecVal, i) as *JsonValue
+                    JsonStringify(elem)
+                    
+                    i = i + 1
+                    if i < len {
+                        std::print(",")
+                    }
+                }
+                std::print("]")
+            } else {
+                // Tipo 3: Object {...}
+                if node.Type == 3 {
+                    std::print("{")
+                    var mapPtr *mymap::Map = node.MapVal
+                    
+                    var capacity int = mapPtr.capacity
+                    var entries *mymap::MapEntry = mapPtr.entries
+                    var entrySize int = size_of(mymap::MapEntry) as int
+                    
+                    var i int = 0
+                    var count int = 0
+                    
+                    for i < capacity {
+                        var entry *mymap::MapEntry = ((entries as int) + (i * entrySize)) as *mymap::MapEntry
+                        if entry.occupied == 1 {
+                            if count > 0 {
+                                std::print(",")
+                            }
+                            std::print("\"")
+                            std::print(entry.key)
+                            std::print("\":")
+                            
+                            var valNode *JsonValue = entry.value as *JsonValue
+                            JsonStringify(valNode)
+                            
+                            count = count + 1
+                        }
+                        i = i + 1
+                    }
+                    std::print("}")
+                }
+            }
+        }
+    }
+}

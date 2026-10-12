@@ -1,0 +1,115 @@
+// heap.cyn — Gestor de memoria dinámica con Heap y Coalescencia
+import "std.cyn"::panic
+export type BlockHeader struct {
+    Size   uint32
+    IsFree uint32
+}
+
+const HeaderSize = size_of(BlockHeader)
+
+var heapStart *BlockHeader = null as *BlockHeader
+var heapLimit uint32 = 0u
+var isInitialized int = 0
+
+func ensureInit() {
+    if isInitialized == 0 {
+        isInitialized = 1
+        heapStart = info_heap_start_ptr() as *BlockHeader
+        heapLimit = info_heap_end_ptr() as uint32
+
+        var totalSize uint32 = (heapLimit - (heapStart as uint32)) - (HeaderSize as uint32)
+        __unsafe__mem_write32(heapStart as *int, totalSize as int, 0)
+        __unsafe__mem_write32(heapStart as *int, 1u as int, 4)
+    }
+}
+
+// MyMalloc ahora retorna un puntero al PAYLOAD (saltándose el Header de 8 bytes)
+export func MyMalloc(size uint32) *int {
+    ensureInit()
+
+    var currentAddr uint32 = heapStart as uint32
+    var limit uint32 = heapLimit
+
+    for currentAddr < limit {
+        var headerPtr *BlockHeader = currentAddr as *BlockHeader
+        
+        var blockSize uint32 = __unsafe__mem_read32(headerPtr as *int, 0) as uint32
+        var isFree uint32 = __unsafe__mem_read32(headerPtr as *int, 4) as uint32
+
+        if isFree == 1u && blockSize >= size {
+            if blockSize > size + (HeaderSize as uint32) + 4u {
+                var remainingAddr uint32 = currentAddr + (HeaderSize as uint32) + size
+                var remainingHeader *BlockHeader = remainingAddr as *BlockHeader
+
+                var remainingSize uint32 = blockSize - size - (HeaderSize as uint32)
+                
+                __unsafe__mem_write32(remainingHeader as *int, remainingSize as int, 0)
+                __unsafe__mem_write32(remainingHeader as *int, 1u as int, 4)
+
+                __unsafe__mem_write32(headerPtr as *int, size as int, 0)
+                blockSize = size
+            }
+
+            __unsafe__mem_write32(headerPtr as *int, 0, 4)
+            
+            // Retornamos la dirección justo después del header (el payload)
+            return (currentAddr + (HeaderSize as uint32)) as *int
+        }
+
+        currentAddr = currentAddr + (HeaderSize as uint32) + blockSize
+    }
+
+    var growBytes uint32 = 65536u
+    if size > growBytes {
+        growBytes = size + HeaderSize
+    }
+
+    var growResult int = __heap_grow(growBytes as int)
+    if growResult == 1 {
+        var oldLimit uint32 = heapLimit
+        heapLimit = info_heap_end_ptr() as uint32
+
+        var newBlockAddr uint32 = oldLimit
+        var newHeader *BlockHeader = newBlockAddr as *BlockHeader
+        var newBlockSize uint32 = heapLimit - newBlockAddr - (HeaderSize as uint32)
+
+        __unsafe__mem_write32(newHeader as *int, newBlockSize as int, 0)
+        __unsafe__mem_write32(newHeader as *int, 1u as int, 4)
+
+        return MyMalloc(size)
+    }
+
+    panic("Out of memory: Heap exhausted and memory.grow failed")
+    return null as *int
+}
+
+// MyFree recibe el puntero al payload y retrocede 8 bytes para encontrar el Header
+export func MyFree(ptr *int) {
+    if ptr == null {
+        return
+    }
+
+    // Retrocedemos el tamaño del Header para recuperar la cabecera real
+    var headerPtr *BlockHeader = ((ptr as int) - (HeaderSize as int)) as *BlockHeader
+    
+    var isFree uint32 = __unsafe__mem_read32(headerPtr as *int, 4) as uint32
+    if isFree == 1u {
+        return // Blindaje contra double-free
+    }
+
+    __unsafe__mem_write32(headerPtr as *int, 1u as int, 4)
+
+    var blockSize uint32 = __unsafe__mem_read32(headerPtr as *int, 0) as uint32
+    var nextAddr uint32 = (headerPtr as uint32) + (HeaderSize as uint32) + blockSize
+    
+    if nextAddr < heapLimit {
+        var nextHeader *BlockHeader = nextAddr as *BlockHeader
+        var nextIsFree uint32 = __unsafe__mem_read32(nextHeader as *int, 4) as uint32
+
+        if nextIsFree == 1u {
+            var nextSize uint32 = __unsafe__mem_read32(nextHeader as *int, 0) as uint32
+            var mergedSize uint32 = blockSize + (HeaderSize as uint32) + nextSize
+            __unsafe__mem_write32(headerPtr as *int, mergedSize as int, 0)
+        }
+    }
+}

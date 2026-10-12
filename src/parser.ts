@@ -1168,47 +1168,51 @@ export class Parser {
         type: { kind: 'array', elementType: firstType, length: elements.length },
       } as any;
     }
-    else if (this.matchToken('KEYWORD', 'size_of') || this.matchToken('IDENTIFIER', 'size_of')) {
+else if (this.matchToken('KEYWORD', 'size_of') || this.matchToken('IDENTIFIER', 'size_of')) {
       const hasParen = this.matchToken('SYMBOL', '(');
-      const isPrimitiveType = [
-        'int', 'i32', 'int32', 'int32_t', 's32',
-        'long', 'i64', 'int64', 'int64_t', 's64',
-        'uint', 'u32', 'uint32', 'uint32_t',
-        'uint64', 'uint64_t', 'u64',
-        'float', 'f32', 'float64', 'double', 'f64',
-        'bool', 'string', 'byte', 'char', 'i8', 'u8',
-        'int8_t', 'uint8_t', 'i16', 'u16', 'int16_t', 'uint16_t',
-        'size_t', 'ssize_t', 'intptr_t', 'uintptr_t', 'usize', 'isize', 'uintptr',
-        'void'
-      ].includes(this.currentToken.value);
+      
+      let targetType: MathType | undefined = undefined;
+      let expr: MathNode | undefined = undefined;
+      let identName: string | undefined = undefined;
 
-      if (this.check('SYMBOL', '*') || isPrimitiveType ||
-          (this.check('SYMBOL', '[') && (this.peekNextToken().value === ']' || this.peekNextToken().type === 'NUMBER'))) {
-        const identName = (this.currentToken.type === 'IDENTIFIER' || this.currentToken.type === 'KEYWORD') ? this.currentToken.value : undefined;
-        const targetType = this.parseGoTypeName();
-        if (hasParen) this.expectToken('SYMBOL', ')');
-        node = { kind: 'size_of', targetType, identName, type: 's32' } as SizeOfNode;
-      } else if (this.currentToken.type === 'IDENTIFIER' && hasParen) {
-        const ident = this.currentToken.value;
-        const next = this.peekNextToken();
-        if (next.type === 'SYMBOL' && next.value === ')') {
-          this.advance();
-          this.expectToken('SYMBOL', ')');
-          node = { kind: 'size_of', identName: ident, type: 's32' } as SizeOfNode;
+      // Intentamos ver si es un tipo (primitivo, puntero, array, struct o calificado con '::')
+      // Guardamos la posición del token por si acaso resulta ser una expresión y debemos retroceder.
+      // O de forma más simple: si el siguiente token indica inequívocamente un tipo o un identificador de tipo.
+      // Como 'p.edad' empieza con un identificador pero luego tiene '.', evaluamos si hay un punto o una operación.
+      
+      // Una forma limpia: si es una expresión general que puede incluir accesos con puntos
+      if (hasParen) {
+        // Guardamos el estado actual del lexer/parser si tuviéramos rollback, 
+        // pero podemos verificar si el siguiente token forma un tipo o una expresión.
+        // En Cyann, si hay un punto después del identificador (ej. p.edad), es una expresión seguro.
+        const isExpression = this.currentToken.type === 'IDENTIFIER' && 
+                             this.peekNextToken().type === 'SYMBOL' && 
+                             this.peekNextToken().value === '.';
+
+        if (isExpression) {
+          expr = this.parseExpression();
         } else {
-          const expr = this.parseExpression();
-          this.expectToken('SYMBOL', ')');
-          node = { kind: 'size_of', expr, type: 's32' } as SizeOfNode;
+          try {
+            // Intentamos parsearlo como tipo
+            targetType = this.parseGoTypeName();
+            if (typeof targetType === 'object' && targetType.kind === 'struct' && targetType.name !== '') {
+              identName = targetType.name;
+            }
+          } catch {
+            // Si falla al parsear como tipo, lo tratamos como expresión
+            expr = this.parseExpression();
+          }
         }
-      } else if (hasParen) {
-        const expr = this.parseExpression();
         this.expectToken('SYMBOL', ')');
-        node = { kind: 'size_of', expr, type: 's32' } as SizeOfNode;
       } else {
-        const identName = (this.currentToken.type === 'IDENTIFIER' || this.currentToken.type === 'KEYWORD') ? this.currentToken.value : undefined;
-        const targetType = this.parseGoTypeName();
-        node = { kind: 'size_of', targetType, identName, type: 's32' } as SizeOfNode;
+        // Sin paréntesis (ej. size_of int)
+        targetType = this.parseGoTypeName();
+        if (typeof targetType === 'object' && targetType.kind === 'struct' && targetType.name !== '') {
+          identName = targetType.name;
+        }
       }
+
+      node = { kind: 'size_of', targetType, expr, identName, type: 's32' } as SizeOfNode;
     }
     else if (this.matchToken('IDENTIFIER', 'arena_for_type')) {
       this.expectToken('SYMBOL', '(');

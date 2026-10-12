@@ -5,6 +5,7 @@ import { typesEqual } from './typeSystem';
 export function mangleType(t: MathType): string {
   if (typeof t === 'string') {
     switch (t) {
+      case 'int':    return 'I'; // Mapeado a s64 (o 'i' si prefieres s32)
       case 's32':    return 'i';
       case 'u32':    return 'u';
       case 's64':    return 'I';
@@ -16,6 +17,10 @@ export function mangleType(t: MathType): string {
       case 'null':   return 'n';
       case 'tuple':  return 'T';
       default: {
+        // Si es un nombre de struct o tipo definido por el usuario en formato string plano
+        if (t.startsWith('S') || t.includes('__module_')) {
+          return t;
+        }
         const _exhaustive: never = t;
         throw new Error(`mangleType: string type no reconocido: ${String(_exhaustive)}`);
       }

@@ -31,7 +31,7 @@ const LOG2_PAGE_SIZE = 16;
 //   offset 4 + 4*i:    captura i (i32)
 // Slot de 4 bytes por captura.
 // ────────────────────────────────────────────────────────────────────────
-
+// finalize
 const RT_SAVE     = 'arena_save';
 const RT_RESTORE  = 'arena_restore';
 const RT_ALLOC    = 'arena_alloc';
@@ -1189,6 +1189,7 @@ export class CodeGenerator {
   private zeroCaptureClosures: Set<string> = new Set();
   private envBaseAddr = 0;
   private envOffsets = new Map<string, number>();
+  private heapStartAddr = 0;
 
   constructor(program: AnalyzedProgram) {
     const stmts = program.body;
@@ -1265,21 +1266,34 @@ export class CodeGenerator {
       this.envBaseAddr = base;
     }
 
-    const staticEnd = this.modular.getStaticDataEnd(8);
+        // 1. Definimos constantes de tamaño
+const ARENA_SIZE = 65536;        // 64 KB fijos para la arena temporal del compilador
+const HEAP_INITIAL_SIZE = 1024 * 1024; // 1 MB inicial para el heap dinámico
 
-    const heapBase = staticEnd;
-    const needed = heapBase + HEAP_PAGES * PAGE_SIZE;
-    const initialPages = Math.max(1, Math.ceil(needed / PAGE_SIZE));
-    const memEnd = initialPages * PAGE_SIZE;
+const staticEnd = this.modular.getStaticDataEnd(8);
 
-    this.modular.addGlobal(RT_PTR, 'i32', true, heapBase);
-    this.modular.addGlobal(RT_MEM_END, 'i32', true, memEnd);
-    this.setupRuntime();
+const arenaStart = staticEnd;
+const arenaEnd = arenaStart + ARENA_SIZE;
+
+// Asignamos a la propiedad de la clase
+this.heapStartAddr = arenaEnd;
+const heapEndAddr = this.heapStartAddr + HEAP_INITIAL_SIZE;
+
+const totalBytesNeeded = heapEndAddr;
+const initialPages = Math.ceil(totalBytesNeeded / PAGE_SIZE);
+const memEnd = initialPages * PAGE_SIZE;
+
+this.modular.addGlobal(RT_PTR, 'i32', true, arenaStart);      
+this.modular.addGlobal('__arena_end', 'i32', true, arenaEnd); 
+this.modular.addGlobal(RT_MEM_END, 'i32', true, memEnd);      
+
+this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
 
     this.modular.addFunctionInstance('_start', this.startBuilder);
     this.modular.addExport('_start', 'function', '_start');
 
     if (initialPages > this.modular.memoryInitial) this.modular.memoryInitial = initialPages;
+
   }
 
   public build(): Uint8Array {
@@ -1417,59 +1431,82 @@ export class CodeGenerator {
 
 
     m.addFunction(RT_ALLOC, ['i32'], 'i32', (b) => {
-      const aligned = b.addLocal('$aligned', 'i32');
-      const end     = b.addLocal('$end', 'i32');
-      const pages   = b.addLocal('$pages', 'i32');
-      const oldSize = b.addLocal('$old_size', 'i32');
+     const aligned = b.addLocal('$aligned', 'i32');
+     const end     = b.addLocal('$end', 'i32');
+
+     b.globalGet(RT_PTR);
+     b.i32Const(MASK);
+     b.i32Add();
+     b.i32Const(NEGMASK);
+     b.i32And();
+     b.setLocal(aligned);
+
+     b.getLocal(aligned);
+     b.getLocal('size');
+     b.i32Add();
+     b.setLocal(end);
+
+     // Validación estricta contra el límite de la arena fija (__arena_end)
+     b.getLocal(end);
+     b.globalGet('__arena_end');
+     b.i32GtU();
+     b.if_('void');
+       b.unreachable(); // Desbordamiento de la arena: colapso seguro sin robar memoria al heap
+     b.end();
+
+     b.getLocal(end);
+     b.globalSet(RT_PTR);
+
+     b.getLocal(aligned);
+   }, ['size']);
 
 
-      b.globalGet(RT_PTR);
-      b.i32Const(MASK);
-      b.i32Add();
-      b.i32Const(NEGMASK);
-      b.i32And();
-      b.setLocal(aligned);
+    // 1. Crecimiento dinámico del Heap mediante memory.grow()
+   m.addFunction('__heap_grow', ['i32'], 'i32', (b) => {
+     const pagesNeeded = b.addLocal('$pages_needed', 'i32');
+     const oldPages    = b.addLocal('$old_pages', 'i32');
 
-      b.getLocal(aligned);
-      b.getLocal('size');
-      b.i32Add();
-      b.setLocal(end);
+     // Calcular páginas necesarias (extra_bytes / 65536)
+     b.getLocal('extra_bytes');
+     b.i32Const(PAGE_SIZE - 1);
+     b.i32Add();
+     b.i32Const(LOG2_PAGE_SIZE);
+     b.i32ShrU();
+     b.setLocal(pagesNeeded);
 
-      b.getLocal(end);
-      b.globalGet(RT_MEM_END);
-      b.i32GtU();
-      b.if_('void');
-        b.getLocal(end);
-        b.globalGet(RT_MEM_END);
-        b.i32Sub();
-        b.i32Const(PAGE_SIZE - 1);
-        b.i32Add();
-        b.i32Const(LOG2_PAGE_SIZE);
-        b.i32ShrU();
-        b.setLocal(pages);
+     b.getLocal(pagesNeeded);
+     b.memoryGrow();
+     b.setLocal(oldPages);
 
-        b.getLocal(pages);
-        b.memoryGrow();
-        b.setLocal(oldSize);
+     // Si memory.grow retorna -1, falló la asignación del sistema
+     b.getLocal(oldPages);
+     b.i32Const(-1);
+     b.i32Eq();
+     b.if_('void');
+       b.i32Const(0); // 0 = Falo
+       b.return_();
+     b.end();
 
-        b.getLocal(oldSize);
-        b.i32Const(-1);
-        b.i32Eq();
-        b.if_('void'); b.unreachable(); b.end();
+     // Actualizar RT_MEM_END con el nuevo espacio ganado
+     b.globalGet(RT_MEM_END);
+     b.getLocal(pagesNeeded);
+     b.i32Const(LOG2_PAGE_SIZE);
+     b.i32Shl();
+     b.i32Add();
+     b.globalSet(RT_MEM_END);
 
-        b.getLocal(oldSize);
-        b.getLocal(pages);
-        b.i32Add();
-        b.i32Const(LOG2_PAGE_SIZE);
-        b.i32Shl();
-        b.globalSet(RT_MEM_END);
-      b.end();
+     b.i32Const(1); // 1 = Éxito
+   }, ['extra_bytes']);
+// heapStartAddr
+   // 2. Consulta del inicio físico del heap
+   m.addFunction('info_heap_start_ptr', [], 'i32', (b) => {
+     b.i32Const(this.heapStartAddr);
+   });
 
-      b.getLocal(end);
-      b.globalSet(RT_PTR);
-
-      b.getLocal(aligned);
-    }, ['size']);
+   // 3. Consulta dinámica del límite actual del heap (lee RT_MEM_END)
+   m.addFunction('info_heap_end_ptr', [], 'i32', (b) => {
+     b.globalGet(RT_MEM_END);
+   });
 
     m.addFunction('__unsafe__mem_memcpy', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('dst');

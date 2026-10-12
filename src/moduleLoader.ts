@@ -158,7 +158,6 @@ export class ModuleLoader {
           }
         }
       }
-
     });
 
     for (const module of this.order) {
@@ -253,26 +252,6 @@ export class ModuleLoader {
         if (duplicate) throw this.locatedError(duplicate, message);
         throw new Error(message);
       }
-
-      for (const name of namespaceNames) {
-        if (importedNames.has(name)) {
-          const declaration = module.imports.find(item => item.declaration.alias === name)?.declaration;
-          if (declaration) {
-            throw this.locatedError(
-              declaration,
-              `El nombre de importación '${name}' se declara más de una vez en ${module.path}`,
-            );
-          }
-        }
-      }
-
-      for (const stmt of module.program.body) {
-        if (stmt.kind === 'function_def' && stmt.exported && stmt.receiver) {
-          const fn = stmt as FunctionDefNode;
-          throw this.locatedError(stmt, `Los métodos todavía no pueden exportarse: '${fn.name}'`);
-        }
-      }
-
     }
   }
 
@@ -312,7 +291,6 @@ export class ModuleLoader {
     const type = module.program.body.find(
       (item): item is Extract<StatementNode, { kind: 'struct_def' | 'type_alias' }> =>
         (item.kind === 'struct_def' || item.kind === 'type_alias') &&
-        item.exported === true &&
         (item.exportName ?? item.name) === symbol,
     );
     if (type) return { kind: 'type', name: type.name };
@@ -463,11 +441,25 @@ export class ModuleLoader {
           this.resolveQualifiedName(module, node.structName, 'type') ??
           node.structName;
       } else if (node.kind === 'size_of' && typeof node.identName === 'string') {
-        node.identName = module.typeNames.get(node.identName) ??
+        const resolvedType = module.typeNames.get(node.identName) ??
           this.resolveQualifiedName(module, node.identName, 'type') ??
           this.resolveQualifiedName(module, node.identName, 'global') ??
-          module.globalNames.get(node.identName) ??
-          node.identName;
+          module.globalNames.get(node.identName);
+        
+        if (resolvedType) {
+          node.identName = resolvedType;
+        } else if (node.identName.includes('::')) {
+          const parts = node.identName.split('::');
+          const targetAlias = parts[0];
+          const targetTypeName = parts[parts.length - 1];
+          const targetModule = module.namespaceImports.get(targetAlias);
+          if (targetModule) {
+            const exp = this.exportedSymbol(targetModule, targetTypeName);
+            if (exp && exp.kind === 'type') {
+              node.identName = targetModule.typeNames.get(exp.name) ?? exp.name;
+            }
+          }
+        }
       } else if (node.kind === 'function_literal') {
         for (const param of node.params as Array<{ name: string; type: MathType }>) {
           param.type = rewriteType(param.type);
@@ -575,7 +567,7 @@ export class ModuleLoader {
             break;
           case 'struct_def':
             stmt.name = module.typeNames.get(stmt.name) ?? stmt.name;
-            stmt.fields.forEach(field => { field.type = rewriteType(field.type); });
+            stmt.fields = stmt.fields.map(field => ({ ...field, type: rewriteType(field.type) }));
             break;
           case 'type_alias':
             stmt.name = module.typeNames.get(stmt.name) ?? stmt.name;

@@ -1,0 +1,155 @@
+// map.cyn — Implementación de un Hashmap dinámico de String -> Int en Cyann
+import "std.cyn" as std
+import "heap.cyn" as heap
+
+export type MapEntry struct {
+    key      string
+    value    int
+    occupied int
+}
+
+export type Map struct {
+    entries  *MapEntry
+    capacity int
+    size     int
+}
+
+// Función de hash rápida (DJB2) corregida para leer bytes de 1 en 1
+func hash_string(s string) int {
+    var hash int = 5381
+    var length int = str_len(s)
+    var i int = 0
+    
+    for i < length {
+        var c int = __unsafe__mem_read8(((s as int) + i) as *char, 0)
+        hash = ((hash * 33) + c)
+        i = i + 1
+    }
+    
+    if hash < 0 {
+        hash = -hash
+    }
+    return hash
+}
+
+export func MapNew(capacity int) *Map {
+    var mapPtr *Map = heap::MyMalloc(size_of Map as uint32) as *Map
+    
+    var entrySize uint32 = size_of MapEntry as uint32
+    var totalBytes uint32 = entrySize * (capacity as uint32)
+    
+    var entriesPtr *MapEntry = heap::MyMalloc(totalBytes) as *MapEntry
+    
+    mapPtr.entries = entriesPtr
+    mapPtr.capacity = capacity
+    mapPtr.size = 0
+    
+    var i int = 0
+    for i < capacity {
+        var entry *MapEntry = ((entriesPtr as int) + (i * (entrySize as int))) as *MapEntry
+        entry.occupied = 0
+        i = i + 1
+    }
+    
+    return mapPtr
+}
+
+func MapResize(m *Map) {
+    var oldEntries *MapEntry = m.entries
+    var oldCapacity int = m.capacity
+    var newCapacity int = oldCapacity * 2
+    var entrySize uint32 = size_of MapEntry as uint32
+    var totalBytes uint32 = entrySize * (newCapacity as uint32)
+    
+    var newEntries *MapEntry = heap::MyMalloc(totalBytes) as *MapEntry
+    
+    var i int = 0
+    for i < newCapacity {
+        var entry *MapEntry = ((newEntries as int) + (i * (entrySize as int))) as *MapEntry
+        entry.occupied = 0
+        i = i + 1
+    }
+    
+    var oldCapacityVal int = oldCapacity
+    var oldEntriesPtr *MapEntry = oldEntries
+    
+    m.entries = newEntries
+    m.capacity = newCapacity
+    m.size = 0
+    
+    var j int = 0
+    for j < oldCapacityVal {
+        var oldEntry *MapEntry = ((oldEntriesPtr as int) + (j * (entrySize as int))) as *MapEntry
+        if oldEntry.occupied == 1 {
+            MapSet(m, oldEntry.key, oldEntry.value)
+        }
+        j = j + 1
+    }
+    
+    heap::MyFree(oldEntriesPtr as *heap::BlockHeader)
+}
+
+export func MapSet(m *Map, key string, value int) {
+    if (m.size + 1) * 4 >= m.capacity * 3 {
+        MapResize(m)
+    }
+
+    var h int = hash_string(key)
+    var cap int = m.capacity
+    var entrySize int = size_of MapEntry
+    
+    var index int = h % cap
+    var startIndex int = index
+    
+    for {
+        var entry *MapEntry = ((m.entries as int) + (index * entrySize)) as *MapEntry
+        
+        if entry.occupied == 0 {
+            m.size = m.size + 1
+            entry.key = key
+            entry.value = value
+            entry.occupied = 1
+            return
+        }
+        
+        if entry.key == key {
+            entry.value = value
+            return
+        }
+        
+        index = (index + 1) % cap
+        if index == startIndex {
+            std::panic("Map overflow: Capacity reached after resize")
+            return
+        }
+    }
+}
+
+export func MapGet(m *Map, key string) int {
+    var h int = hash_string(key)
+    var cap int = m.capacity
+    var entrySize int = size_of MapEntry
+    
+    var index int = h % cap
+    var startIndex int = index
+    
+    var searching bool = true
+    for searching {
+        var entry *MapEntry = ((m.entries as int) + (index * entrySize)) as *MapEntry
+        
+        if entry.occupied == 0 {
+            return 0 
+        }
+        
+        if entry.key == key {
+            return entry.value
+        }
+        
+        index = (index + 1) % cap
+        if index == startIndex {
+            searching = false
+        }
+    }
+    
+    return 0
+}

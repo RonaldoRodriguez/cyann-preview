@@ -1,0 +1,36 @@
+import "lib/std.cyn" as std
+import "lib/json.cyn" as json
+import "lib/map.cyn" as mymap
+import "lib/vector.cyn" as vec
+
+func main() {
+    std::println("--- INICIANDO PRUEBA DE JSON INTEGRAL ---")
+
+    // 1. Creamos el objeto raíz: { }
+    var root = json::JsonNewObject()
+
+    // 2. Usamos sobrecarga para número: "score": 100
+    mymap::MapSet(root.MapVal, "score", json::JsonNew(100) as int)
+
+    // 3. Usamos sobrecarga para string: "status": "active"
+    mymap::MapSet(root.MapVal, "status", json::JsonNew("active") as int)
+
+    // 4. Creamos un arreglo interno y lo metemos en el objeto: "items": [10, 20, 30]
+    var itemsNode = json::JsonNewArray()
+    vec::VectorPush(itemsNode.VecVal, json::JsonNew(10) as int)
+    vec::VectorPush(itemsNode.VecVal, json::JsonNew(20) as int)
+    vec::VectorPush(itemsNode.VecVal, json::JsonNew(30) as int)
+    
+    mymap::MapSet(root.MapVal, "items", itemsNode as int)
+
+    std::println("Árbol JSON completo construido con éxito.\n")
+
+    // 5. ¡Serializamos todo el objeto raíz a texto plano!
+    std::print("JSON Resultante: ")
+    json::JsonStringify(root)
+    std::println("")
+
+    std::println("\n--- PRUEBA FINALIZADA CON ÉXITO ---")
+}
+
+main()

@@ -1,0 +1,91 @@
+// vector.cyn — Implementación de un Vector dinámico de Int en Cyann
+import "std.cyn" as std
+import "heap.cyn" as heap
+
+export type Vector struct {
+    data     *int
+    capacity int
+    length   int
+}
+
+// Crear un nuevo vector con una capacidad inicial
+export func VectorNew(capacity int) *Vector {
+    var v *Vector = heap::MyMalloc(size_of Vector as uint32) as *Vector
+    
+    var elemSize uint32 = 4u // 4 bytes por entero (int en WASM)
+    var totalBytes uint32 = elemSize * (capacity as uint32)
+    
+    var dataPtr *int = heap::MyMalloc(totalBytes) as *int
+    
+    v.data = dataPtr
+    v.capacity = capacity
+    v.length = 0
+    
+    return v
+}
+
+// Redimensionar el vector duplicando su capacidad
+export func VectorResize(v *Vector) {
+    var oldData *int = v.data
+    var oldCapacity int = v.capacity
+    var newCapacity int = oldCapacity * 2
+    var elemSize uint32 = 4u
+    var totalBytes uint32 = elemSize * (newCapacity as uint32)
+    
+    // 1. Reservar nuevo bloque en el heap
+    var newData *int = heap::MyMalloc(totalBytes) as *int
+    
+    // 2. Copiar los elementos viejos al nuevo bloque usando offsets en bytes
+    var i int = 0
+    for i < v.length {
+        var offset int = i * 4
+        var val int = __unsafe__mem_read32((oldData as int + offset) as *int, 0)
+        __unsafe__mem_write32((newData as int + offset) as *int, val, 0)
+        i = i + 1
+    }
+    
+    // 3. Actualizar puntero y capacidad
+    v.data = newData
+    v.capacity = newCapacity
+    
+    // 4. Liberar el bloque viejo
+    heap::MyFree(oldData as *int)
+}
+
+// Añadir un elemento al final del vector
+export func VectorPush(v *Vector, value int) {
+    if v.length >= v.capacity {
+        VectorResize(v)
+    }
+    
+    var offset int = v.length * 4
+    __unsafe__mem_write32((v.data as int + offset) as *int, value, 0)
+    v.length = v.length + 1
+}
+
+// Obtener un elemento por su índice (con validación opcional)
+export func VectorGet(v *Vector, index int) int {
+    if index < 0 || index >= v.length {
+        std::panic("Vector index out of bounds")
+        return 0
+    }
+    
+    var offset int = index * 4
+    return __unsafe__mem_read32((v.data as int + offset) as *int, 0)
+}
+
+// Modificar un elemento en un índice existente
+export func VectorSet(v *Vector, index int, value int) {
+    if index < 0 || index >= v.length {
+        std::panic("Vector index out of bounds")
+        return
+    }
+    
+    var offset int = index * 4
+    __unsafe__mem_write32((v.data as int + offset) as *int, value, 0)
+}
+
+// Obtener el tamaño actual del vector
+export func VectorLength(v *Vector) int {
+    return v.length
+}
