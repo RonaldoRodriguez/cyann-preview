@@ -185,11 +185,16 @@ export class SemanticAnalyzer {
       { name: 'arena_save',    params: [],                    ret: pointer       },
       { name: 'arena_restore', params: [pointer],              ret: null          },
       { name: 'arena_alloc',   params: [s32],                  ret: pointer       },
-      { name: 'memcpy',        params: [pointer, pointer, s32],ret: null          },
+      { name: '__unsafe__mem_memcpy',        params: [pointer, pointer, s32],ret: null          },
+      { name: '__unsafe__mem_memcpyi',        params: [s32, s32, s32],ret: null          },
       { name: '__unsafe__mem_read32',    params: [pointer, s32],              ret: s32           },
+      { name: '__unsafe__mem_read32i',    params: [s32, s32],              ret: s32           },
       { name: '__unsafe__mem_write32',   params: [pointer, s32, s32],         ret: null          },
+      { name: '__unsafe__mem_write32i',   params: [s32, s32, s32],         ret: null          },
       { name: '__unsafe__mem_read8',     params: [pointer, s32],              ret: s32           },
       { name: '__unsafe__mem_write8',    params: [pointer, s32, s32],         ret: null          },
+      { name: '__unsafe__mem_read8i',     params: [s32, s32],              ret: s32           },
+      { name: '__unsafe__mem_write8i',    params: [s32, s32, s32],         ret: null          },
       { name: 'str_len',       params: ['string'],      ret: s32            },
       { name: 'str_concat',    params: ['string', 'string'], ret: 'string'  },
       { name: 'str_eq',        params: ['string', 'string'], ret: 'bool'    },
@@ -1216,7 +1221,8 @@ export class SemanticAnalyzer {
         return 'string';
       }
 
-      case 'cast': {
+// semantic
+     case 'cast': {
         const from = this.resolveType(this.analyzeExpression(node.operand));
         node.oldType = from;
         const to = this.resolveType(node.newType);
@@ -1232,20 +1238,27 @@ export class SemanticAnalyzer {
           (to === 'bool' && (from === 's32' || from === 'u32'));
         if (boolBridge) return to;
         if (isArithmeticType(from) && isArithmeticType(to)) return to;
+
         const fromPointer = typeof from === 'object' && from.kind === 'pointer';
         const toPointer = typeof to === 'object' && to.kind === 'pointer';
         const fromStruct = typeof from === 'object' && from.kind === 'struct';
         const toStruct = typeof to === 'object' && to.kind === 'struct';
+
+        // Puntero como origen: Puede convertirse a otro puntero, struct o entero (ej. obtener dirección numérica)
         if (fromPointer && (toPointer || toStruct || isIntegerType(to))) return to;
-        if (toPointer && fromStruct) return to;
-        if (typeof from === 'object' && from.kind ==='struct' &&  this._structCache.has(from.name) && (to === 's32')) return to;
-        if ((from === 's32') &&  typeof to === 'object' && to.kind === 'struct' && this._structCache.has(to.name)) return to; 
-        //if ((from === 's32') &&  typeof to === 'object' && to.kind === 'dynarray') return to; 
-        if ((to === 's32') &&  typeof from === 'object' && from.kind === 'dynarray') return to; 
+
+        // Puntero como destino (Castear HACIA un puntero): 
+        // Permitimos que vengan desde otro puntero, un struct, O UN ENTERO (s32/u32)
+        if (toPointer && (fromPointer || fromStruct || isIntegerType(from))) return to;
+
+        if (typeof from === 'object' && from.kind === 'struct' && this._structCache.has(from.name) && (to === 's32')) return to;
+        if ((from === 's32') && typeof to === 'object' && to.kind === 'struct' && this._structCache.has(to.name)) return to; 
+        if ((to === 's32') && typeof from === 'object' && from.kind === 'dynarray') return to; 
 
         this.error(`cast no soportado: ${this.typeName(from)} → ${this.typeName(to)}`);
         return to;
       }
+
 
       case 'make_array': {
         const n = node as MakeArrayNode;
@@ -1308,30 +1321,39 @@ export class SemanticAnalyzer {
           return 'bool';
         }
         if (node.name === 'key_values' && !this.scopeControl.has('key_values')) {
-          if (node.args.length !== 1 || node.args[0].kind !== 'variable') {
-            this.error('key_values() espera el nombre de un tipo struct');
+          const argument = node.args[0];
+          if (node.args.length !== 1 || argument.kind !== 'variable') {
+            this.error('key_values() espera un tipo struct o una variable struct');
             return 's32';
           }
 
-          const typeName = node.args[0].name;
-          if (
-            !this.typeAliases.has(typeName) &&
-            !this.structDefinitions.has(typeName)
+          let declaredType: MathType;
+          if (this.scopeControl.has(argument.name)) {
+            declaredType = this.resolveType(this.analyzeExpression(argument));
+          } else if (
+            this.typeAliases.has(argument.name) ||
+            this.structDefinitions.has(argument.name)
           ) {
-            this.error(`key_values(): '${typeName}' no es un tipo struct conocido`);
-            return 's32';
-          }
-          const declaredType = this.typeAliases.get(typeName) ??
-            ({ kind: 'struct', name: typeName, fields: [], size: 0, align: 1 } as StructType);
-          const resolvedType = this.resolveType(declaredType);
-          if (typeof resolvedType !== 'object' || resolvedType.kind !== 'struct') {
-            this.error(`key_values(): '${typeName}' no es un tipo struct`);
+            declaredType = this.typeAliases.get(argument.name) ??
+              ({ kind: 'struct', name: argument.name, fields: [], size: 0, align: 1 } as StructType);
+            declaredType = this.resolveType(declaredType);
+          } else {
+            this.error(
+              `key_values(): '${argument.name}' no es un tipo struct ni una variable struct`
+            );
             return 's32';
           }
 
-          const definition = this.structDefinitions.get(resolvedType.name);
+          if (typeof declaredType !== 'object' || declaredType.kind !== 'struct') {
+            this.error(
+              `key_values(): '${argument.name}' no es un tipo struct ni una variable struct`
+            );
+            return 's32';
+          }
+
+          const definition = this.structDefinitions.get(declaredType.name);
           if (!definition) {
-            this.error(`key_values(): no se encontró la definición de '${typeName}'`);
+            this.error(`key_values(): no se encontró la definición de '${argument.name}'`);
             return 's32';
           }
 
@@ -1665,7 +1687,7 @@ export class SemanticAnalyzer {
                 newCall.kind = 'call';
                 newCall.name = method.mangledName;
                 newCall.args = [sa.base, ...methodArgs];
-                newCall.paramTypes = method.type.paramTypes;
+                newCall.paramTypes = [baseTypeRaw, ...method.type.paramTypes.slice(1)];
                 newCall.returnTypes = method.type.returnTypes;
                 newCall.variadic = method.type.variadic;
                 newCall.type = method.type.returnTypes[0] ?? 'void';

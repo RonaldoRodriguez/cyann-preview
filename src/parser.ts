@@ -346,7 +346,7 @@ export class Parser {
     this.matchToken('SYMBOL', ';');
     return { kind: 'expression_stmt', expr };
   }
-
+// import std ""
   private parseImportStatement(): ImportDeclNode | ModuleImportNode {
     if (this._blockDepth !== 0) this.error("'import' solo se permite en el nivel superior");
     this.expectToken('KEYWORD', 'import');
@@ -1245,8 +1245,20 @@ export class Parser {
       if (this.currentToken.line === closeParenLine) {
         returnTypes = this.parseReturnTypes();
       }
-      const body = this.parseBlock();
-      node = { kind: 'function_literal', params, returnTypes, body };
+      if(this.check('SYMBOL', '{')){       
+        const body = this.parseBlock();
+        node = { kind: 'function_literal', params, returnTypes, body }; 
+      }
+      else if(this.matchToken('SYMBOL', '=>')){
+        const values: MathNode[] = [];
+        values.push(this.parseExpression());
+        node = { kind: 'function_literal', params, returnTypes, body: [{ kind: 'return', values }] }; 
+      }
+      else {
+        node = { kind: 'function_literal', params, returnTypes, body: [{ kind: 'return', values:[] }] }; 
+      }
+
+
     }
     else if (this.matchToken('KEYWORD', 'struct')) {
       this.expectToken('SYMBOL', '{');
@@ -1268,12 +1280,34 @@ export class Parser {
         type: { kind: 'struct', name: '', fields: [], size: 0, align: 1 },
       } as any;
     }
+    else if (this.matchToken('SYMBOL', '{')) {
+      const fields: { name: string; value: MathNode }[] = [];
+      if (this.currentToken.value !== '}') {
+        for (; ;) {
+          if(this.check('SYMBOL', '}')) break;
+          const fieldName = this.expectToken('IDENTIFIER');
+          this.expectToken('SYMBOL', ':');
+          const value = this.parseExpression();
+          fields.push({ name: fieldName, value });
+          if (!this.matchToken('SYMBOL', ',')) break;
+        }
+      }
+      this.expectToken('SYMBOL', '}');
+      node = {
+        kind: 'struct_literal',
+        structName: '__anon',
+        fields,
+        type: { kind: 'struct', name: '', fields: [], size: 0, align: 1 },
+      } as any;
+    }
     else if (this.matchToken('NUMBER')) node = createConstNode(token.value);
     else if (this.matchToken('STRING')) node = { kind: 'string', type: 'string', value: token.value };
     else if (this.matchToken('TEMPLATE')) node = this.parseInterpolatedString(token);
     else if (this.matchToken('BOOLEAN')) node = { kind: 'bool', type: 'bool', value: token.value === 'true' };
     else if (this.matchToken('KEYWORD', 'null')) node = { kind: 'const', type: 'null', value: -1 };
     else if (this.matchToken('SYMBOL', '(')) {
+
+      ///=============================
       const savedNoStruct = this._noStructLiteral;
       this._noStructLiteral = 0;
       try {
@@ -1294,6 +1328,7 @@ export class Parser {
         }
         else node = this.parsePostfix(node);
       }
+      //=====================================
     }
     else if (this.matchToken('IDENTIFIER')) {
       const name = this.parseQualifiedNameTailFrom(token.value);

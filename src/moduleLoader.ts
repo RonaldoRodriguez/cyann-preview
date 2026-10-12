@@ -465,6 +465,8 @@ export class ModuleLoader {
       } else if (node.kind === 'size_of' && typeof node.identName === 'string') {
         node.identName = module.typeNames.get(node.identName) ??
           this.resolveQualifiedName(module, node.identName, 'type') ??
+          this.resolveQualifiedName(module, node.identName, 'global') ??
+          module.globalNames.get(node.identName) ??
           node.identName;
       } else if (node.kind === 'function_literal') {
         for (const param of node.params as Array<{ name: string; type: MathType }>) {

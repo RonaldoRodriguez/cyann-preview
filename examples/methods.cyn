@@ -143,6 +143,8 @@ type Person struct {
     age  int
 }
 
+type PersonAlias Person
+
 [Person]
 func greet() {
     print("hola, soy ")
@@ -226,6 +228,14 @@ func main() {
     section("7. Llamada directa como función libre")
     var q = Person { name: "Z", age: 50 }
     check(get_age(q), 50, "get_age(q) via nombre de método")
+
+    section("8. Método sobre puntero a struct")
+    var pointer *PersonAlias = arena_alloc(size_of(PersonAlias))
+    pointer.name = "Pointer"
+    pointer.age = 60
+    check(pointer.get_age(), 60, "pointer.get_age()")
+    check(pointer.add_years(2), 62, "pointer.add_years(2)")
+    check(size_of(PersonAlias), 8, "size_of excluye los métodos")
     
     println("")
     println("══════════════════════════════════════════════")

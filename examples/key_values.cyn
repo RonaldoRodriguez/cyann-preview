@@ -13,6 +13,13 @@ type Person struct {
 
 type PublicPerson Person
 
+var globalPerson = Person{nombre: "Global", edad: 40, activo: true, id: 7, scores: [1, 2], format: func(s string) string { return s }}
+var globalPersonFields = key_values(globalPerson)
+const globalConstantPerson = Person{nombre: "Constant", edad: 41, activo: false, id: 9, scores: [], format: func(s string) string { return s }}
+var globalConstantPersonFields = key_values(globalConstantPerson)
+var globalPersonSize int = size_of(globalPerson)
+const globalConstantPersonSize int = size_of(globalConstantPerson)
+
 func main() {
     var fields = key_values(Person)
     if len(fields) != 6 {
@@ -32,9 +39,23 @@ func main() {
     }
 
     var aliasedFields = key_values(PublicPerson)
+    println($"{len(fields)} --- {len(aliasedFields)}")
+
     if len(aliasedFields) != len(fields) || aliasedFields[1][1] != "int" {
         panic("key_values debe aceptar alias de structs")
     }
+
+    var person = Person{nombre: "Local", edad: 20, activo: true, id: 8, scores: [3], format: func(s string) string { return s }}
+    var variableFields = key_values(person)
+    if len(variableFields) != len(fields) || variableFields[5][0] != "format" {
+        panic("key_values debe aceptar variables struct sin perder campos")
+    }
+    if len(globalPersonFields) != len(fields) ||
+        len(globalConstantPersonFields) != len(fields) ||
+        globalPersonSize == 0 || globalConstantPersonSize != globalPersonSize {
+        panic("key_values y size_of deben aceptar variables y constantes globales")
+    }
+
     println("key_values: TODO OK")
 }
 

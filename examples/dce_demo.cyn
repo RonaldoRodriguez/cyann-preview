@@ -2,8 +2,8 @@
 
 @include("lib/std.cyn")
 
-var g_pass int = 0
-var g_fail int = 0
+var g_pass int = 0;
+var g_fail int = 0;
 
 func section(t string) { println(""); print("═══ "); println(t) }
 func check(got int, want int, l string) {

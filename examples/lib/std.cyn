@@ -23,9 +23,18 @@ func _write(fd int, ptr *int, length int) {
     _iovec.len = length
     _wasi_fd_write(fd, _iovec, 1, _nwrite)
 }
-
+/*
+export func println(value u32){
+    print_int(value as int)
+    print("\n")
+}
+*/
 export func print(value string) {
     _write(1, value as *int, str_len(value))
+}
+
+export func print(value *int) {
+    print_int(value as int)
 }
 
 export func print(value int) {
@@ -39,6 +48,9 @@ export func print(value bool) {
 export func println(value string) {
     print(value)
     print("\n")
+}
+export func println(value *int) {
+    println_int(value as int)
 }
 
 export func println(value int) {

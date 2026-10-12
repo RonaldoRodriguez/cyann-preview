@@ -16,8 +16,18 @@ type Large struct {
     c bool
 }
 
+var globalPerson = Person{name: "Global", edad: 30}
+const globalConstantPerson = Person{name: "Constant", edad: 31}
+var globalPersonSize int = size_of(globalPerson)
+const globalPersonSizeConst int = size_of(globalConstantPerson)
+
 func main() {
     println("--- Pruebas de size_of ---")
+
+    print("size_of(globalPerson): "); println(globalPersonSize)
+    if globalPersonSizeConst != globalPersonSize {
+        panic("size_of debe aceptar variables globales y constantes")
+    }
 
     // Primitivos con paréntesis
     print("size_of(int): "); println(size_of(int))

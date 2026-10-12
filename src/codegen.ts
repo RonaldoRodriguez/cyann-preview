@@ -21,7 +21,7 @@ import {
 } from './typeSystem';
 
 export type CompileResult = MathType | 'void';
-
+// case 'cast':
 const HEAP_PAGES = 16;
 const PAGE_SIZE  = 65536;
 const LOG2_PAGE_SIZE = 16;
@@ -124,7 +124,7 @@ export function handleImplicitConversion(
     b.addLocal(base, 'i32'); b.setLocal(base);
     b.getLocal(base); b.i32Const(from.length); b.i32Store();
     b.getLocal(base); b.i32Const(4); b.i32Add();
-    b.getLocal(src); b.i32Const(totalBytes); b.callByName('memcpy');
+    b.getLocal(src); b.i32Const(totalBytes); b.callByName('__unsafe__mem_memcpy');
     b.getLocal(base); b.i32Const(4); b.i32Add();
     return;
   }
@@ -173,7 +173,7 @@ export function emitStoreForType(b: FunctionIRBuilder, t: MathType, offset = 0):
     if (offset > 0) { b.i32Const(offset); b.i32Add(); }
     b.getLocal(srcName);
     b.i32Const(total);
-    b.callByName('memcpy');
+    b.callByName('__unsafe__mem_memcpy');
     return;
   }
   if (typeof t !== 'string') { b.i32Store(offset); return; }
@@ -371,7 +371,7 @@ export class ExpressionCompiler {
       case 'size_of': {
         const s = node as SizeOfNode;
         this.b.i32Const(s.value ?? 0);
-        return 's32';
+        return 'u32';
       }
 
       case 'arena_for_type': {
@@ -400,27 +400,44 @@ export class ExpressionCompiler {
       }
       case 'binary':
         return this.compileBinary(node as BinaryNode);
+
       case 'cast': {
         const c = node as CastNode;
         const from = this.compileValue(c.operand);
         const to = c.newType;
         if (typesEqual(from, to)) return to;
+        
         if ((from === 'string' && (to === 's32' || to === 'u32')) ||
           (to === 'string' && (from === 's32' || from === 'u32')) ||
           (from === 'string' && typeof to === 'object' && to.kind === 'pointer') ||
           (to === 'string' && typeof from === 'object' && from.kind === 'pointer')) return to;
+          
         if ((from === 'bool' && (to === 's32' || to === 'u32')) ||
             (to === 'bool' && (from === 's32' || from === 'u32'))) return to;
+            
         const fromPointer = typeof from === 'object' && from.kind === 'pointer';
         const toPointer = typeof to === 'object' && to.kind === 'pointer';
         const fromStruct = typeof from === 'object' && from.kind === 'struct';
         const toStruct = typeof to === 'object' && to.kind === 'struct';
+        
         if (fromPointer && (toPointer || toStruct)) return to;
+        
         if (fromPointer && isIntegerType(to)) {
           if (to === 's64') this.b.i64ExtendI32S();
           else if (to === 'u64') this.b.i64ExtendI32U();
           return to;
         }
+
+        // --- NUEVO: Castear desde un tipo entero HACIA un puntero ---
+        if (toPointer && isIntegerType(from)) {
+          if (from === 's64' || from === 'u64') {
+            this.b.i32WrapI64(); // Trunca el entero largo a un puntero i32 de Wasm
+          }
+          // Si viene de s32 o u32, ya está en formato i32 nativo de Wasm, no requiere opcodes
+          return to;
+        }
+        // -------------------------------------------------------------
+
         if (toPointer && fromStruct) return to;
         if (typeof from === 'object' && from.kind ==='struct' && (to === 's32')) return to;
         if (typeof to === 'object' && to.kind ==='struct' && (from === 's32')) return to;
@@ -432,6 +449,7 @@ export class ExpressionCompiler {
         this.emitConversion(from as ArithmeticType, to as ArithmeticType);
         return to;
       }
+
 
       case 'call': {
         const c = node as CallNode;
@@ -1453,7 +1471,14 @@ export class CodeGenerator {
       b.getLocal(aligned);
     }, ['size']);
 
-    m.addFunction('memcpy', ['i32', 'i32', 'i32'], null, (b) => {
+    m.addFunction('__unsafe__mem_memcpy', ['i32', 'i32', 'i32'], null, (b) => {
+      b.getLocal('dst');
+      b.getLocal('src');
+      b.getLocal('n');
+      b.memoryCopy();
+    }, ['dst', 'src', 'n']);
+
+    m.addFunction('__unsafe__mem_memcpyi', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('dst');
       b.getLocal('src');
       b.getLocal('n');
@@ -1466,6 +1491,14 @@ export class CodeGenerator {
       b.i32Add()
       b.i32Load(); 
     }, ['addr', 'offset']);
+
+        m.addFunction('__unsafe__mem_read32i', ['i32', 'i32'], 'i32', (b) => { 
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add()
+      b.i32Load(); 
+    }, ['addr', 'offset']);
+
     m.addFunction('__unsafe__mem_write32', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('addr'); 
       b.getLocal('offset');
@@ -1473,6 +1506,14 @@ export class CodeGenerator {
       b.getLocal('v'); 
       b.i32Store();
     }, ['addr', 'v', 'offset']);
+    m.addFunction('__unsafe__mem_write32i', ['i32', 'i32', 'i32'], null, (b) => {
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add()
+      b.getLocal('v'); 
+      b.i32Store();
+    }, ['addr', 'v', 'offset']);
+
     m.addFunction('__unsafe__mem_read8', ['i32', 'i32'], 'i32', (b) => { 
       b.getLocal('addr');
       b.getLocal('offset');
@@ -1564,7 +1605,7 @@ export class CodeGenerator {
         b.getLocal('result'); b.getLocal('length'); b.i32Store();
         b.getLocal('result'); b.i32Const(4); b.i32Add();
         b.getLocal('scratch'); b.getLocal('index'); b.i32Const(1); b.i32Add(); b.i32Add();
-        b.getLocal('length'); b.callByName('memcpy');
+        b.getLocal('length'); b.callByName('__unsafe__mem_memcpy');
         b.getLocal('result'); b.i32Const(4); b.i32Add();
       }, ['value']);
     };
@@ -1634,9 +1675,9 @@ export class CodeGenerator {
       b.getLocal('buf');
       b.getLocal('len_a'); b.getLocal('len_b'); b.i32Add(); b.i32Store();
       b.getLocal('buf'); b.i32Const(4); b.i32Add();
-      b.getLocal('a'); b.getLocal('len_a'); b.callByName('memcpy');
+      b.getLocal('a'); b.getLocal('len_a'); b.callByName('__unsafe__mem_memcpy');
       b.getLocal('buf'); b.i32Const(4); b.i32Add(); b.getLocal('len_a'); b.i32Add();
-      b.getLocal('b'); b.getLocal('len_b'); b.callByName('memcpy');
+      b.getLocal('b'); b.getLocal('len_b'); b.callByName('__unsafe__mem_memcpy');
       b.getLocal('buf'); b.i32Const(4); b.i32Add();
     }, ['a', 'b']);
   }
