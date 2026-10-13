@@ -245,12 +245,20 @@ export class ExpressionCompiler {
             partType = 'string';
           } else {
             partType = this.compileValue(part);
+            
+            // Verificamos si es puntero o u32
+            const isPointer = (typeof partType === 'object' && partType !== null && partType.kind === 'pointer') || 
+                              (typeof partType === 'string' && partType.endsWith('*'));
+
             if (partType === 'bool') {
               this.b.callByName('__bool_to_string');
             } else if (partType === 's32') {
               this.b.callByName('__s32_to_string');
             } else if (partType === 'u32') {
               this.b.callByName('__u32_to_string');
+            } else if (isPointer) {
+              // ¡Aquí mandamos a llamar al helper hexadecimal para los punteros!
+              this.b.callByName('__ptr_to_string'); 
             } else if (partType !== 'string') {
               throw new Error(`Tipo no compatible con interpolación: ${String(partType)}`);
             }
@@ -262,6 +270,20 @@ export class ExpressionCompiler {
         return 'string';
       }
 
+      case 'dereference': {
+        const d = node as any;
+        // 1. Compilamos la expresión interna (ej. p.data) para dejar su dirección en la pila
+        this.compileValue(d.expr);
+        
+        // 2. Determinamos el tipo del valor apuntado
+        const pointeeType = d.type === 'int' ? 's32' : d.type;
+        
+        // 3. Emitimos la instrucción de lectura (load) nativa desde la memoria
+        emitLoadForType(this.b, pointeeType, 0);
+        
+        return pointeeType;
+      }
+// node.kind === 'assign'
       case 'function_ref': {
         const r = node as FunctionRefNode;
         this.b.envAddrByName(r.name);
@@ -427,7 +449,7 @@ export class ExpressionCompiler {
           else if (to === 'u64') this.b.i64ExtendI32U();
           return to;
         }
-
+// Nodo no soportado en codegen
         // --- NUEVO: Castear desde un tipo entero HACIA un puntero ---
         if (toPointer && isIntegerType(from)) {
           if (from === 's64' || from === 'u64') {
@@ -583,7 +605,7 @@ export class ExpressionCompiler {
       default: throw new Error(`Nodo no soportado en codegen: ${(node as any).kind}`);
     }
   }
-
+// ec.compile
   private compileBinary(node: BinaryNode): CompileResult {
     const leftPreview  = ((node.left  as any).type) as MathType | undefined;
     const rightPreview = ((node.right as any).type) as MathType | undefined;
@@ -1565,6 +1587,39 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.i32Store8();
     }, ['addr', 'v', 'offset']);
 
+    // --- Lectura y Escritura de 16 bits ---
+    m.addFunction('__unsafe__mem_read16', ['i32', 'i32'], 'i32', (b) => { 
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add(); 
+      b.i32Load16U(); // Carga de 16 bits sin signo (o i32.load16S si prefieres con signo)
+    }, ['addr', 'offset']);
+
+    m.addFunction('__unsafe__mem_write16', ['i32', 'i32', 'i32'], null, (b) => {
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add(); 
+      b.getLocal('v'); 
+      b.i32Store16();
+    }, ['addr', 'v', 'offset']);
+
+    // --- Lectura y Escritura de 64 bits (para i64) ---
+    // Nota: WebAssembly maneja i64 de forma nativa con sus propias instrucciones de carga/almacenamiento
+    m.addFunction('__unsafe__mem_read64', ['i32', 'i32'], 'i64', (b) => { 
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add(); 
+      b.i64Load(); 
+    }, ['addr', 'offset']);
+
+    m.addFunction('__unsafe__mem_write64', ['i32', 'i64', 'i32'], null, (b) => {
+      b.getLocal('addr'); 
+      b.getLocal('offset');
+      b.i32Add(); 
+      b.getLocal('v'); 
+      b.i64Store();
+    }, ['addr', 'v', 'offset']);
+
     m.addFunction('str_len', ['i32'], 'i32', (b) => {
       b.getLocal('s'); b.i32Const(4); b.i32Sub(); b.i32Load();
     }, ['s']);
@@ -1578,6 +1633,10 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.end();
     }, ['value']);
 
+        /*m.addFunction('__ptr_to_string', ['i32'], 'i32', (b) => {
+      b.getLocal('value');
+    }, ['value']);*/
+// 'interpolated_string'
     const addIntegerToString = (name: string, unsigned: boolean): void => {
       m.addFunction(name, ['i32'], 'i32', (b) => {
         b.addLocal('negative', 'i32');
@@ -1717,6 +1776,151 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.getLocal('b'); b.getLocal('len_b'); b.callByName('__unsafe__mem_memcpy');
       b.getLocal('buf'); b.i32Const(4); b.i32Add();
     }, ['a', 'b']);
+    m.addFunction('int_to_string', ['i32'], 'i32', (b) => {
+      // Locals:
+      // temp: i32 (para contar y extraer dígitos)
+      // digits: i32 (contador de dígitos)
+      // alloc_ptr: i32 (puntero base devuelto por el alocador)
+      // str_ptr: i32 (alloc_ptr + 4, el puntero oficial del string)
+      // p: i32 (puntero móvil para escribir los caracteres de atrás hacia adelante)
+      // rem: i32 (residuo de la división por 10)
+
+      b.addLocal('temp', 'i32');
+      b.addLocal('digits', 'i32');
+      b.addLocal('alloc_ptr', 'i32');
+      b.addLocal('str_ptr', 'i32');
+      b.addLocal('p', 'i32');
+      b.addLocal('rem', 'i32');
+
+      // Inicializar contador de dígitos en 0
+      b.i32Const(0);
+      b.setLocal('digits');
+
+      // temp = value
+      b.getLocal('value');
+      b.setLocal('temp');
+
+      // Si el valor es exactamente 0, tiene 1 dígito ('0')
+      b.getLocal('value');
+      b.i32Const(0);
+      b.i32Eq();
+      b.if_('void');
+        b.i32Const(1);
+        b.setLocal('digits');
+      b.else_();
+        // Bucle para contar cuántos dígitos tiene el número
+        b.block('void', 'count_done');
+        b.loop('void', 'count_loop');
+          b.getLocal('temp');
+          b.i32Const(0);
+          b.i32Eq();
+          b.brIfTo('count_done');
+
+          // digits++
+          b.getLocal('digits');
+          b.i32Const(1);
+          b.i32Add();
+          b.setLocal('digits');
+
+          // temp = temp / 10 (división sin signo)
+          b.getLocal('temp');
+          b.i32Const(10);
+          b.i32DivU();
+          b.setLocal('temp');
+
+          b.brTo('count_loop');
+        b.end(); b.end();
+      b.end();
+
+      // --- Alocación en el Heap ---
+      // Tamaño total = 4 bytes (header de longitud) + cantidad de dígitos
+      b.getLocal('digits');
+      b.i32Const(4);
+      b.i32Add();
+      b.callByName(RT_ALLOC);
+      b.setLocal('alloc_ptr');
+
+      // Guardar la longitud en la cabecera (alloc_ptr)
+      b.getLocal('alloc_ptr');
+      b.getLocal('digits');
+      b.i32Store();
+
+      // str_ptr = alloc_ptr + 4 (este es el puntero que usarán las funciones de string)
+      b.getLocal('alloc_ptr');
+      b.i32Const(4);
+      b.i32Add();
+      b.setLocal('str_ptr');
+
+      // p = str_ptr + digits (apunta al final de los caracteres para escribir hacia atrás)
+      b.getLocal('str_ptr');
+      b.getLocal('digits');
+      b.i32Add();
+      b.setLocal('p');
+
+      // Restaurar temp = value para escribir los dígitos
+      b.getLocal('value');
+      b.setLocal('temp');
+
+      // Si el valor es 0, escribimos directamente el carácter '0' (ASCII 48)
+      b.getLocal('value');
+      b.i32Const(0);
+      b.i32Eq();
+      b.if_('void');
+        b.getLocal('str_ptr');
+        b.i32Const(48);
+        b.i32Store8();
+      b.else_();
+        // Bucle de escritura de dígitos de atrás hacia adelante
+        b.block('void', 'write_done');
+        b.loop('void', 'write_loop');
+          b.getLocal('digits');
+          b.i32Const(0);
+          b.i32Eq();
+          b.brIfTo('write_done');
+
+          // rem = temp % 10
+          b.getLocal('temp');
+          b.i32Const(10);
+          b.i32RemU();
+          b.setLocal('rem');
+
+          // temp = temp / 10
+          b.getLocal('temp');
+          b.i32Const(10);
+          b.i32DivU();
+          b.setLocal('temp');
+
+          // p-- (moverse un byte hacia atrás)
+          b.getLocal('p');
+          b.i32Const(1);
+          b.i32Sub();
+          b.setLocal('p');
+
+          // Guardar byte: [p] = rem + 48 ('0')
+          b.getLocal('p');
+          b.getLocal('rem');
+          b.i32Const(48);
+          b.i32Add();
+          b.i32Store8();
+
+          // digits--
+          b.getLocal('digits');
+          b.i32Const(1);
+          b.i32Sub();
+          b.setLocal('digits');
+
+          b.brTo('write_loop');
+        b.end(); b.end();
+      b.end();
+
+      // Retornar el puntero oficial del string (str_ptr)
+      b.getLocal('str_ptr');
+    }, ['value']);
+
+    m.addFunction('__ptr_to_string', ['i32'], 'i32', (b) => {
+      b.getLocal('value');
+      b.callByName('int_to_string')
+    }, ['value']);
   }
 
   public compileStatement(stmt: StatementNode, b: FunctionIRBuilder, topLevel = false): void {
@@ -1776,7 +1980,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
           }
           break;
         }
-
+// LValue no soportado
         const unique = (v as any).uniqueName ?? v.name;
         if ((v as any).boxed) {
           b.addLocal(unique, 'i32');
@@ -2084,7 +2288,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       default: throw new Error(`Sentencia no soportada en codegen: ${(stmt as any).kind}`);
     }
   }
-
+// dereference
   private compileAssignment(a: AssignNode, b: FunctionIRBuilder, ec: ExpressionCompiler): void {
     if (a.target.kind === 'variable') {
       const v = a.target as VariableNode & { uniqueName?: string; isGlobal?: boolean; boxed?: boolean };
@@ -2182,6 +2386,18 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.setLocal(addr);
       return { addrLocal: addr, targetType: target.type };
     }
+    if (target.kind === 'dereference') {
+      const d = target as any;
+      const addr = `$addr_${this.ctr++}`;
+      b.addLocal(addr, 'i32');
+      
+      // Compilamos la expresión interna (ej. p.data) usando compileValue normal 
+      // para que emita el LOAD del campo y obtengamos la dirección a la que apunta (ej. 0x00000004)
+      ec.compile(d.expr); 
+      b.setLocal(addr);
+      return { addrLocal: addr, targetType: d.type };
+    }
+
     throw new Error(`LValue no soportado: ${target.kind}`);
   }
 

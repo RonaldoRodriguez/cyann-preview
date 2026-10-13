@@ -342,11 +342,77 @@ export class Parser {
       return { kind: 'assign', target, expr };
     }
 
+    /// Assign Sumado
+    if (this.matchToken('SYMBOL', '+=')) {
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      //{ kind: 'binary', op: op as any, left: result, right }
+      return {
+        kind: 'assign',
+        target,
+        expr: {
+          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
+          op: '+',
+          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
+          right: expr          // La expresión de la derecha
+        }
+      };
+    }
+
+    if (this.matchToken('SYMBOL', '-=')) {
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      //{ kind: 'binary', op: op as any, left: result, right }
+      return {
+        kind: 'assign',
+        target,
+        expr: {
+          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
+          op: '-',
+          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
+          right: expr          // La expresión de la derecha
+        }
+      };
+    }
+
+    if (this.matchToken('SYMBOL', '*=')) {
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      //{ kind: 'binary', op: op as any, left: result, right }
+      return {
+        kind: 'assign',
+        target,
+        expr: {
+          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
+          op: '*',
+          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
+          right: expr          // La expresión de la derecha
+        }
+      };
+    }
+
+    if (this.matchToken('SYMBOL', '/=')) {
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      //{ kind: 'binary', op: op as any, left: result, right }
+      return {
+        kind: 'assign',
+        target,
+        expr: {
+          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
+          op: '/',
+          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
+          right: expr          // La expresión de la derecha
+        }
+      };
+    }
+
+
     const expr = this.parseExpressionStartingWith(target);
     this.matchToken('SYMBOL', ';');
     return { kind: 'expression_stmt', expr };
   }
-// import std ""
+ //'size_of'
   private parseImportStatement(): ImportDeclNode | ModuleImportNode {
     if (this._blockDepth !== 0) this.error("'import' solo se permite en el nivel superior");
     this.expectToken('KEYWORD', 'import');
@@ -1350,7 +1416,7 @@ else if (this.matchToken('KEYWORD', 'size_of') || this.matchToken('IDENTIFIER', 
     }
     return node;
   }
-
+// 'call'
   private parseInterpolatedString(token: Token): MathNode {
     if (!token.terminated) this.errorAt(token, 'String interpolado sin cerrar');
 
@@ -1477,10 +1543,28 @@ else if (this.matchToken('KEYWORD', 'size_of') || this.matchToken('IDENTIFIER', 
     };
   }
 
-  private parsePostfix(base: MathNode): MathNode {
+private parsePostfix(base: MathNode): MathNode {
     let expr = base;
     while (true) {
       const value = this.currentToken.value;
+      
+      if (value === '*') {
+        // CORRECCIÓN: Una desreferencia sufijo solo es válida si el siguiente token 
+        // NO es parte de una multiplicación binaria (es decir, no está seguido de un número o identificador de valor).
+        // O si tu lenguaje prefiere el operador de desreferencia como PREFIJO en lugar de sufijo.
+        // Si detectamos que es un operador binario común (viene un número o variable para multiplicar), lo ignoramos como sufijo:
+        const nextToken = this.peekNextToken();
+        const isBinaryMultiply = nextToken && (nextToken.type === 'NUMBER' || nextToken.type === 'IDENTIFIER' || nextToken.value === '(');
+        
+        if (!isBinaryMultiply && this.matchToken('SYMBOL', '*')) {
+          expr = { kind: 'dereference', expr: expr, type: 's32' };
+          continue;
+        } else {
+          // Si es parte de una multiplicación, rompemos el postfix para que el parser binario lo resuelva
+          break;
+        }
+      }
+
       if (value === '++' || value === '--') {
         this.advance();
         expr = { kind: 'increment', operator: value, operand: expr, prefix: false, type: 's32' };

@@ -187,9 +187,13 @@ export class SemanticAnalyzer {
         { name: 'arena_alloc',                params: [s32],                  ret: pointer },
         { name: '__unsafe__mem_memcpy',       params: [pointer, pointer, s32], ret: null    },
         { name: '__unsafe__mem_memcpyi',      params: [s32, s32, s32],        ret: null    },
+        { name: '__unsafe__mem_read16',       params: [pointer, s32],         ret: s32     },
+        { name: '__unsafe__mem_read64',       params: [pointer, s32],         ret: s32     },
         { name: '__unsafe__mem_read32',       params: [pointer, s32],         ret: s32     },
         { name: '__unsafe__mem_read32i',      params: [s32, s32],             ret: s32     },
         { name: '__unsafe__mem_write32',      params: [pointer, s32, s32],    ret: null    },
+        { name: '__unsafe__mem_write16',      params: [pointer, s32, s32],    ret: null    },
+        { name: '__unsafe__mem_write64',      params: [pointer, s32, s32],    ret: null    },
         { name: '__unsafe__mem_write32i',     params: [s32, s32, s32],        ret: null    },
         { name: '__unsafe__mem_read8',        params: [pointer, s32],         ret: s32     },
         { name: '__unsafe__mem_write8',       params: [pointer, s32, s32],    ret: null    },
@@ -199,7 +203,6 @@ export class SemanticAnalyzer {
         { name: 'str_concat',                 params: ['string', 'string'],   ret: 'string'},
         { name: 'str_eq',                     params: ['string', 'string'],   ret: 'bool'  },
         { name: 'str_ne',                     params: ['string', 'string'],   ret: 'bool'  },
-        
         // --- Nuevas funciones nativas del Heap y Expansión ---
         { name: '__heap_grow',                params: [s32],                  ret: s32     },
         { name: 'info_heap_start_ptr',        params: [],                     ret: pointer },
@@ -254,7 +257,7 @@ export class SemanticAnalyzer {
       default: return 0;
     }
   }
-
+//'interpolated_string'
   private checkEscape(value: MathNode, slotLevel: number, ctx: string): void {
     if (!value) return;
     const lvl = this.exprLevel(value);
@@ -695,25 +698,48 @@ export class SemanticAnalyzer {
         break;
       }
 
-      case 'assign': {
-        const targetType = this.resolveType(this.analyzeExpression(stmt.target));
-
+case 'assign': {
         let root: any = stmt.target;
-        while (root.kind === 'struct_access' || root.kind === 'array_access') {
-          root = (root as any).base;
-        }
-        if (root.kind === 'capture_access') {
-          // OK
+        
+        // --- 1. VALIDACIÓN DEL LVALUE (Permitir dereference) ---
+        if (root.kind === 'dereference') {
+          // Es un puntero desreferenciado, pasamos por alto la validación de lvalue de pila
         } else {
-          if (root.kind !== 'variable') {
-            this.error('El destino no es modificable');
+          while (root.kind === 'struct_access' || root.kind === 'array_access') {
+            root = (root as any).base;
+          }
+          if (root.kind === 'capture_access') {
+            // OK
+          } else {
+            if (root.kind !== 'variable') {
+              this.error('El destino no es modificable');
+              break;
+            }
+            this.scopeControl.checkMutable(root.name);
+            const slotLvl = this.slotLevelOfTarget(stmt.target);
+            this.checkEscape(stmt.expr, slotLvl, `asignación a '${root.name}'`);
+          }
+        }
+
+        // --- 2. RESOLUCIÓN DE TIPO DEL DESTINO ---
+        let targetType: MathType;
+        if (stmt.target.kind === 'dereference') {
+          // Si es un dereference, resolvemos el tipo al que apunta el puntero
+          const ptrType = this.resolveType(this.analyzeExpression(stmt.target.expr));
+          if (typeof ptrType === 'object' && ptrType !== null && ptrType.kind === 'pointer') {
+            targetType = ptrType.targetType;
+          } else if (typeof ptrType === 'string' && ptrType.endsWith('*')) {
+            targetType = ptrType.slice(0, -1);
+          } else {
+            this.error(`No se puede desreferenciar una expresión que no es un puntero (tipo recibido: ${this.typeName(ptrType)})`);
             break;
           }
-          this.scopeControl.checkMutable(root.name);
-          const slotLvl = this.slotLevelOfTarget(stmt.target);
-          this.checkEscape(stmt.expr, slotLvl, `asignación a '${root.name}'`);
+          if (targetType === 'int') targetType = 's32';
+        } else {
+          targetType = this.resolveType(this.analyzeExpression(stmt.target));
         }
 
+        // --- 3. VALIDACIÓN DE TIPOS EN LA ASIGNACIÓN ---
         const exprType = this.resolveType(this.analyzeExpression(stmt.expr));
 
         if (!this.isAssignableType(exprType, targetType)) {
@@ -725,7 +751,92 @@ export class SemanticAnalyzer {
             );
           }
         }
+
+        // --- 4. DESUGARING: CONVERTIR p* = val EN UNA LLAMADA AL HELPER DE MEMORIA ---
+        if (stmt.target.kind === 'dereference') {
+          const size = (typeof sizeOfType === 'function' && targetType) ? sizeOfType(targetType) : 4;
+          let writeFn = '__unsafe__mem_write32';
+          if (size === 1) {
+            writeFn = '__unsafe__mem_write8';
+          } else if (size === 2) {
+            writeFn = '__unsafe__mem_write16';
+          } else if (size === 4) {
+            writeFn = '__unsafe__mem_write32';
+          } else if (size === 8) {
+            writeFn = '__unsafe__mem_write64';
+          }
+
+          const pointerExpr = stmt.target.expr; // Guardamos la expresión base del puntero
+
+          // Transformamos el nodo assign en un expression_stmt con una llamada usando 'name'
+          stmt.kind = 'expression_stmt';
+          (stmt as any).expr = {
+             kind: 'call',
+             name: writeFn,
+             args: [
+               pointerExpr,                      // Dirección base del puntero (ej. p)
+               stmt.expr,                        // Valor a escribir (ej. 23)
+               { kind: 'const', type: 's32', value: 0 } // <-- Cambiado de 'number' a 'const'
+             ],
+             paramTypes: [typeof targetType === 'object' ? targetType : 's32', targetType, 's32'],
+             type: 'void'
+           };
+          delete (stmt as any).target; // Borramos el target original para ocultar el dereference al codegen
+
+          // Analizamos la nueva expresión de llamada resultante
+          this.analyzeExpression((stmt as any).expr);
+        }
+
         break;
+      }
+
+      case 'dereference': {
+        // 1. Analizamos la expresión interna del puntero (ej. p.data)
+        const ptrType = this.resolveType(this.analyzeExpression(node.expr));
+
+        // 2. Extraemos el tipo al que apunta el puntero (pointeeType)
+        let pointeeType: MathType;
+        if (typeof ptrType === 'object' && ptrType !== null && ptrType.kind === 'pointer') {
+          pointeeType = ptrType.targetType;
+        } else if (typeof ptrType === 'string' && ptrType.endsWith('*')) {
+          pointeeType = ptrType.slice(0, -1);
+        } else {
+          this.error(`No se puede desreferenciar una expresión que no es un puntero (tipo recibido: ${this.typeName(ptrType)})`);
+          node.type = 's32';
+          return 's32';
+        }
+
+        if (pointeeType === 'int') pointeeType = 's32';
+
+        // 3. Seleccionamos el helper de lectura adecuado según el tamaño en bytes
+        const size = (typeof sizeOfType === 'function' && pointeeType) ? sizeOfType(pointeeType) : 4;
+        let readFn = '__unsafe__mem_read32';
+        if (size === 1) {
+          readFn = '__unsafe__mem_read8';
+        } else if (size === 2) {
+          readFn = '__unsafe__mem_read16';
+        } else if (size === 4) {
+          readFn = '__unsafe__mem_read32';
+        } else if (size === 8) {
+          readFn = '__unsafe__mem_read64';
+        }
+
+        const pointerExpr = node.expr; // Guardamos la expresión base (ej. p.data)
+
+        // 4. Transformamos el nodo 'dereference' en un nodo de tipo 'call' hacia el helper
+        node.kind = 'call';
+        (node as any).name = readFn;
+        (node as any).args = [
+          pointerExpr,                             // La expresión del puntero (ej. p.data)
+          { kind: 'const', type: 's32', value: 0 } // Offset por defecto (0)
+        ];
+        (node as any).paramTypes = [ptrType, 's32'];
+        (node as any).type = pointeeType;
+        delete (node as any).expr;
+
+        // 5. Analizamos la nueva llamada resultante y retornamos su tipo
+        this.analyzeExpression(node);
+        return pointeeType;
       }
 
       case 'function_def':
@@ -1204,22 +1315,28 @@ export class SemanticAnalyzer {
         node.type = result;
         return result;
       }
-
+// ''
       case 'interpolated_string': {
         for (const part of node.parts) {
           if (typeof part === 'string') continue;
           const partType = this.resolveType(this.analyzeExpression(part));
+          
+          // Helper para detectar si es un puntero
+          const isPointer = (typeof partType === 'object' && partType !== null && partType.kind === 'pointer') || 
+                            (typeof partType === 'string' && partType.endsWith('*'));
+
           if ('type' in part && part.type === 'void') {
             this.error('No se puede interpolar una expresión sin valor');
           } else if (
             partType !== 'string' &&
             partType !== 'bool' &&
             partType !== 's32' &&
-            partType !== 'u32'
+            partType !== 'u32' &&
+            !isPointer
           ) {
             this.error(
               `Tipo no compatible con interpolación: ${this.typeName(partType)}. ` +
-              'Se admiten string, bool, int/s32 y u32.',
+              'Se admiten string, bool, int/s32, u32 y punteros.',
             );
           }
         }
@@ -1227,7 +1344,6 @@ export class SemanticAnalyzer {
         return 'string';
       }
 
-// semantic
      case 'cast': {
         const from = this.resolveType(this.analyzeExpression(node.operand));
         node.oldType = from;
@@ -1609,6 +1725,29 @@ export class SemanticAnalyzer {
         }
         this.error(`'${node.name}' no es una función`);
         return 's32';
+      }
+
+      case 'dereference': {
+        // 1. Analizamos la expresión interna (ej. p.data) para resolver variables y tipos
+        const ptrType = this.resolveType(this.analyzeExpression(node.expr));
+
+        // 2. Extraemos el tipo al que apunta el puntero (pointeeType)
+        let pointeeType: MathType;
+        if (typeof ptrType === 'object' && ptrType !== null && ptrType.kind === 'pointer') {
+          pointeeType = ptrType.targetType;
+        } else if (typeof ptrType === 'string' && ptrType.endsWith('*')) {
+          pointeeType = ptrType.slice(0, -1);
+        } else {
+          this.error(`No se puede desreferenciar una expresión que no es un puntero (tipo recibido: ${this.typeName(ptrType)})`);
+          node.type = 's32';
+          return 's32';
+        }
+// Tipo no compatible con interpolación
+        if (pointeeType === 'int') pointeeType = 's32';
+
+        // 3. Asignamos el tipo al nodo y lo retornamos
+        node.type = pointeeType;
+        return pointeeType;
       }
 
       case 'call_indirect': {

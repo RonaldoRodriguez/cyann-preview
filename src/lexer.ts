@@ -152,7 +152,8 @@ export class Lexer {
 
     // Símbolos multi-carácter
     const twoChar = this.source.slice(this.index, this.index + 2);
-    const doubleOps = ['==', '!=', '<=', '>=', '&&', '||', '<<', '>>', '->', '=>'];
+    const doubleOps = ['==', '!=', '<=', '>=', '&&', '||', '<<', '>>', '->', '=>',
+      '+=','-=','/=','*='];
     if (doubleOps.includes(twoChar)) {
       this.nextChar(); this.nextChar();
       return this.token('SYMBOL', twoChar, startIndex, startLine, startColumn);

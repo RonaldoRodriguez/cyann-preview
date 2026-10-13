@@ -23,18 +23,28 @@ func _write(fd int, ptr *int, length int) {
     _iovec.len = length
     _wasi_fd_write(fd, _iovec, 1, _nwrite)
 }
-/*
-export func println(value u32){
-    print_int(value as int)
-    print("\n")
+
+export func pointer(n *int) string {
+    var val = (n as int) >> 0u;
+    // ¡Separamos 'c' y 'd' correctamente para tener los 16 caracteres hexadecimales!
+    const hexChars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+    var hexString = "";
+
+    for var i = 0; i < 8; i++ {
+        const remainder = val & 0xf;
+        hexString = hexChars[remainder as int] + hexString;
+        val = val >> 4u;
+    }
+
+    return "0x" + hexString;
 }
-*/
+
 export func print(value string) {
     _write(1, value as *int, str_len(value))
 }
 
 export func print(value *int) {
-    print_int(value as int)
+    print(pointer(value))
 }
 
 export func print(value int) {
@@ -49,8 +59,12 @@ export func println(value string) {
     print(value)
     print("\n")
 }
+
+
+
 export func println(value *int) {
-    println_int(value as int)
+    print(pointer(value))
+    print("\n")
 }
 
 export func println(value int) {
