@@ -699,96 +699,104 @@ export class SemanticAnalyzer {
       }
 
 case 'assign': {
-        let root: any = stmt.target;
-        
-        // --- 1. VALIDACIÓN DEL LVALUE (Permitir dereference) ---
-        if (root.kind === 'dereference') {
-          // Es un puntero desreferenciado, pasamos por alto la validación de lvalue de pila
-        } else {
-          while (root.kind === 'struct_access' || root.kind === 'array_access') {
-            root = (root as any).base;
-          }
-          if (root.kind === 'capture_access') {
-            // OK
-          } else {
-            if (root.kind !== 'variable') {
-              this.error('El destino no es modificable');
-              break;
-            }
-            this.scopeControl.checkMutable(root.name);
-            const slotLvl = this.slotLevelOfTarget(stmt.target);
-            this.checkEscape(stmt.expr, slotLvl, `asignación a '${root.name}'`);
-          }
-        }
+    let root: any = stmt.target;
+    
+    // --- 1. VALIDACIÓN DEL LVALUE (Desenvuelve structs, arrays y punteros anidados) ---
+    while (root.kind === 'struct_access' || root.kind === 'array_access' || root.kind === 'dereference') {
+      root = root.base || root.expr;
+    }
 
-        // --- 2. RESOLUCIÓN DE TIPO DEL DESTINO ---
-        let targetType: MathType;
-        if (stmt.target.kind === 'dereference') {
-          // Si es un dereference, resolvemos el tipo al que apunta el puntero
-          const ptrType = this.resolveType(this.analyzeExpression(stmt.target.expr));
-          if (typeof ptrType === 'object' && ptrType !== null && ptrType.kind === 'pointer') {
-            targetType = ptrType.targetType;
-          } else if (typeof ptrType === 'string' && ptrType.endsWith('*')) {
-            targetType = ptrType.slice(0, -1);
-          } else {
-            this.error(`No se puede desreferenciar una expresión que no es un puntero (tipo recibido: ${this.typeName(ptrType)})`);
-            break;
-          }
-          if (targetType === 'int') targetType = 's32';
-        } else {
-          targetType = this.resolveType(this.analyzeExpression(stmt.target));
-        }
+    if (root.kind !== 'variable' && root.kind !== 'capture_access') {
+      this.error('El destino no es modificable');
+      break;
+    }
 
-        // --- 3. VALIDACIÓN DE TIPOS EN LA ASIGNACIÓN ---
-        const exprType = this.resolveType(this.analyzeExpression(stmt.expr));
+    if (root.kind === 'variable') {
+      this.scopeControl.checkMutable(root.name);
+      const slotLvl = this.slotLevelOfTarget(stmt.target);
+      this.checkEscape(stmt.expr, slotLvl, `asignación a '${root.name}'`);
+    }
 
-        if (!this.isAssignableType(exprType, targetType)) {
-          const contextualized = this.contextualizeArrayLiteral(stmt.expr, targetType);
-          if (!contextualized && !(exprType === 'null' && typeof targetType !== 'string')) {
-            this.error(
-              `Type mismatch en asignación: no se puede asignar ${this.typeName(exprType)} ` +
-              `a un destino de tipo ${this.typeName(targetType)}`
-            );
-          }
-        }
+    // --- 2. RESOLUCIÓN DE TIPO DEL DESTINO ---
+    let targetType: MathType;
+    // Si el target involucra desreferencia o acceso a elementos, resolvemos el tipo subyacente
+    targetType = this.resolveType(this.analyzeExpression(stmt.target));
+    if (targetType === 'int') targetType = 's32';
 
-        // --- 4. DESUGARING: CONVERTIR p* = val EN UNA LLAMADA AL HELPER DE MEMORIA ---
-        if (stmt.target.kind === 'dereference') {
-          const size = (typeof sizeOfType === 'function' && targetType) ? sizeOfType(targetType) : 4;
-          let writeFn = '__unsafe__mem_write32';
-          if (size === 1) {
-            writeFn = '__unsafe__mem_write8';
-          } else if (size === 2) {
-            writeFn = '__unsafe__mem_write16';
-          } else if (size === 4) {
-            writeFn = '__unsafe__mem_write32';
-          } else if (size === 8) {
-            writeFn = '__unsafe__mem_write64';
-          }
+    // --- 3. VALIDACIÓN DE TIPOS EN LA ASIGNACIÓN ---
+    const exprType = this.resolveType(this.analyzeExpression(stmt.expr));
 
-          const pointerExpr = stmt.target.expr; // Guardamos la expresión base del puntero
-
-          // Transformamos el nodo assign en un expression_stmt con una llamada usando 'name'
-          stmt.kind = 'expression_stmt';
-          (stmt as any).expr = {
-             kind: 'call',
-             name: writeFn,
-             args: [
-               pointerExpr,                      // Dirección base del puntero (ej. p)
-               stmt.expr,                        // Valor a escribir (ej. 23)
-               { kind: 'const', type: 's32', value: 0 } // <-- Cambiado de 'number' a 'const'
-             ],
-             paramTypes: [typeof targetType === 'object' ? targetType : 's32', targetType, 's32'],
-             type: 'void'
-           };
-          delete (stmt as any).target; // Borramos el target original para ocultar el dereference al codegen
-
-          // Analizamos la nueva expresión de llamada resultante
-          this.analyzeExpression((stmt as any).expr);
-        }
-
-        break;
+    if (!this.isAssignableType(exprType, targetType)) {
+      const contextualized = this.contextualizeArrayLiteral(stmt.expr, targetType);
+      if (!contextualized && !(exprType === 'null' && typeof targetType !== 'string')) {
+        this.error(
+          `Type mismatch en asignación: no se puede asignar ${this.typeName(exprType)} ` +
+          `a un destino de tipo ${this.typeName(targetType)}`
+        );
       }
+    }
+
+    // --- 4. DESUGARING: CONVERTIR p*[0] = val O p* = val EN UNA LLAMADA AL HELPER DE MEMORIA ---
+    // Verificamos si el target contiene una desreferencia en cualquier punto de su estructura
+    const hasDereference = (node: any): boolean => {
+      if (!node) return false;
+      if (node.kind === 'dereference') return true;
+      if (node.kind === 'array_access' || node.kind === 'struct_access') {
+        return hasDereference(node.base || node.expr);
+      }
+      return false;
+    };
+
+    if (hasDereference(stmt.target)) {
+      const size = (typeof sizeOfType === 'function' && targetType) ? sizeOfType(targetType) : 4;
+      let writeFn = '__unsafe__mem_write32';
+      if (size === 1) writeFn = '__unsafe__mem_write8';
+      else if (size === 2) writeFn = '__unsafe__mem_write16';
+      else if (size === 4) writeFn = '__unsafe__mem_write32';
+      else if (size === 8) writeFn = '__unsafe__mem_write64';
+
+      // Si es un array access sobre un puntero (ej. p*[0]), extraemos la base del puntero y el offset calculado
+      let pointerExpr = stmt.target;
+      let offsetExpr: MathNode = { kind: 'const', type: 's32', value: 0 };
+
+      if (stmt.target.kind === 'array_access') {
+        pointerExpr = stmt.target.base; // El puntero base (ej. p*)
+        // Si la base es un dereference, extraemos su expresión interna para obtener la dirección cruda
+        if (pointerExpr.kind === 'dereference') {
+          pointerExpr = pointerExpr.expr;
+        }
+        // Multiplicamos el índice del array por el tamaño del tipo para obtener el byte offset exacto
+        offsetExpr = {
+          kind: 'binary',
+          op: '*',
+          left: stmt.target.index,
+          right: { kind: 'const', type: 's32', value: size },
+          type: 's32'
+        };
+      } else if (stmt.target.kind === 'dereference') {
+        pointerExpr = stmt.target.expr;
+      }
+
+      // Transformamos el nodo assign en un expression_stmt llamando al intrínseco de memoria
+      stmt.kind = 'expression_stmt';
+      (stmt as any).expr = {
+         kind: 'call',
+         name: writeFn,
+         args: [
+           pointerExpr,  // Dirección base
+           stmt.expr,    // Valor a escribir
+           offsetExpr    // Offset en bytes calculado automáticamente
+         ],
+         paramTypes: ['i32', targetType, 's32'],
+         type: 'void'
+      };
+      delete (stmt as any).target;
+
+      this.analyzeExpression((stmt as any).expr);
+    }
+
+    break;
+  }
 
       case 'dereference': {
         // 1. Analizamos la expresión interna del puntero (ej. p.data)
@@ -1104,7 +1112,7 @@ case 'assign': {
 
     const capturedNames = this.findCapturedVars(fn.params, fn.body);
     this.capturedNamesStack.push(capturedNames);
-
+// El destino no es modificable
     const userParamStart = receiverType ? 1 : 0;
     for (let i = userParamStart; i < fn.params.length; i++) {
       const param = fn.params[i];
