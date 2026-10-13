@@ -313,19 +313,36 @@ export class Parser {
     return { kind: 'expression_stmt', expr };
   }
 
-  private parseStatementStartingWithIdentifier(name: string): StatementNode {
+private parseStatementStartingWithIdentifier(name: string): StatementNode {
+    const names = [name];
+    let isMulti = false;
+
+    // 1. Verificamos si hay nombres múltiples separados por comas (ej. a, b = ... o a, b := ...)
     if (this.matchToken('SYMBOL', ',')) {
-      const names = [name];
+      isMulti = true;
       do {
         names.push(this.expectToken('IDENTIFIER'));
       } while (this.matchToken('SYMBOL', ','));
+    }
 
+    // 2. Interceptamos el operador walrus := (Short Variable Declaration)
+    if (this.matchToken('SYMBOL', ':=')) {
+      const expr = this.parseExpression();
+      this.matchToken('SYMBOL', ';');
+      return isMulti
+        ? { kind: 'multi_decl', names, expr }
+        : { kind: 'short_var_decl', name, expr };
+    }
+
+    // 3. Si había comas pero usaba asignación normal '='
+    if (isMulti) {
       this.expectToken('SYMBOL', '=');
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
       return { kind: 'multi_decl', names, expr };
     }
 
+    // 4. Si es una llamada a función que comienza con el identificador
     if (this.currentToken.value === '(') {
       let expr: MathNode = this.parseCallAfterName(name);
       expr = this.parsePostfix(expr);
@@ -333,6 +350,7 @@ export class Parser {
       return { kind: 'expression_stmt', expr };
     }
 
+    // 5. Asignaciones, accesos a structs/arrays o punteros desreferenciados
     const variable: MathNode = { kind: 'variable', name, type: 's32' };
     const target = this.parsePostfix(variable);
 
@@ -342,77 +360,53 @@ export class Parser {
       return { kind: 'assign', target, expr };
     }
 
-    /// Assign Sumado
+    // Asignaciones compuestas (+=, -=, *=, /=)
     if (this.matchToken('SYMBOL', '+=')) {
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
-      //{ kind: 'binary', op: op as any, left: result, right }
       return {
         kind: 'assign',
         target,
-        expr: {
-          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
-          op: '+',
-          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
-          right: expr          // La expresión de la derecha
-        }
+        expr: { kind: 'binary', op: '+', left: target, right: expr }
       };
     }
 
     if (this.matchToken('SYMBOL', '-=')) {
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
-      //{ kind: 'binary', op: op as any, left: result, right }
       return {
         kind: 'assign',
         target,
-        expr: {
-          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
-          op: '-',
-          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
-          right: expr          // La expresión de la derecha
-        }
+        expr: { kind: 'binary', op: '-', left: target, right: expr }
       };
     }
 
     if (this.matchToken('SYMBOL', '*=')) {
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
-      //{ kind: 'binary', op: op as any, left: result, right }
       return {
         kind: 'assign',
         target,
-        expr: {
-          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
-          op: '*',
-          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
-          right: expr          // La expresión de la derecha
-        }
+        expr: { kind: 'binary', op: '*', left: target, right: expr }
       };
     }
 
     if (this.matchToken('SYMBOL', '/=')) {
       const expr = this.parseExpression();
       this.matchToken('SYMBOL', ';');
-      //{ kind: 'binary', op: op as any, left: result, right }
       return {
         kind: 'assign',
         target,
-        expr: {
-          kind: 'binary', // El nombre que use tu AST para operaciones como a + b
-          op: '/',
-          left: target,             // Reutilizamos el target en el lado izquierdo de la suma/resta
-          right: expr          // La expresión de la derecha
-        }
+        expr: { kind: 'binary', op: '/', left: target, right: expr }
       };
     }
-
 
     const expr = this.parseExpressionStartingWith(target);
     this.matchToken('SYMBOL', ';');
     return { kind: 'expression_stmt', expr };
   }
- //'size_of'
+
+  
   private parseImportStatement(): ImportDeclNode | ModuleImportNode {
     if (this._blockDepth !== 0) this.error("'import' solo se permite en el nivel superior");
     this.expectToken('KEYWORD', 'import');
@@ -1557,7 +1551,7 @@ private parsePostfix(base: MathNode): MathNode {
         const isBinaryMultiply = nextToken && (nextToken.type === 'NUMBER' || nextToken.type === 'IDENTIFIER' || nextToken.value === '(');
         
         if (!isBinaryMultiply && this.matchToken('SYMBOL', '*')) {
-          expr = { kind: 'dereference', expr: expr, type: 's32' };
+          expr = { kind: 'dereference', expr: expr, type: 's32' } as unknown as MathNode;
           continue;
         } else {
           // Si es parte de una multiplicación, rompemos el postfix para que el parser binario lo resuelva

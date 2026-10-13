@@ -1,0 +1,23 @@
+import "lib/std.cyn" as std
+import "lib/heap.cyn" as heap
+
+// 1. Inferencia de tipos con el operador walrus :=
+allocSize := size_of [4]int
+p := heap::MyMalloc(allocSize as uint32) as *[4]int
+
+// 2. Asignación a través del puntero y desreferencia
+p*[0] = 42
+p*[1] = 100
+
+// 3. Impresión mediante interpolación de cadenas
+std::println($"Elemento 0: {p*[0]}")
+std::println($"Elemento 1: {p*[1]}")
+
+// 4. Probando indirección múltiple con :=
+basePtr := heap::MyMalloc(4u) as *[1]int
+basePtr*[0] = 777
+
+ptrToPtr := heap::MyMalloc(4u) as **int
+__unsafe__mem_write32(ptrToPtr, basePtr as int, 0)
+
+std::println($"Doble indirección con ptrToPtr**: {ptrToPtr**}")
