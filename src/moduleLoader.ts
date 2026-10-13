@@ -11,7 +11,7 @@ import {
 import { MathType } from './types';
 import { preprocessWithSourceMap } from './preprocessor';
 import { formatDiagnostic } from './diagnostics';
-
+// if (stmt.kind !== 'module_import') continue;
 interface LoadedModule {
   path: string;
   program: ProgramNode;
@@ -93,7 +93,11 @@ export class ModuleLoader {
       for (const stmt of program.body) {
         if (stmt.kind !== 'module_import') continue;
         const declaration = stmt as ModuleImportNode;
-        const targetPath = path.resolve(path.dirname(resolvedPath), declaration.path);
+        
+        // Limpiamos y normalizamos las barras invertidas para evitar errores en Windows con '..'
+        const normalizedImportPath = declaration.path.replace(/\\/g, '/');
+        const targetPath = path.normalize(path.resolve(path.dirname(resolvedPath), normalizedImportPath));
+        
         let target: LoadedModule;
         try {
           target = await this.loadModule(targetPath);
@@ -169,12 +173,16 @@ export class ModuleLoader {
         if (!declaration.symbol) continue;
         const exported = this.exportedSymbol(target, declaration.symbol);
         if (!exported) continue;
+        
         if (exported.kind === 'function') {
           module.functionNames.set(declaration.symbol, target.functionNames.get(exported.name)!);
         } else if (exported.kind === 'global') {
           module.globalNames.set(declaration.symbol, target.globalNames.get(exported.name)!);
-        } else {
+        } else if (exported.kind === 'type') {
           module.typeNames.set(declaration.symbol, target.typeNames.get(exported.name)!);
+        } else if (exported.kind === 'namespace') {
+          // Registramos el namespace re-exportado en el módulo actual
+          module.namespaceImports.set(declaration.symbol, exported.targetModule!);
         }
       }
     }
@@ -271,15 +279,17 @@ export class ModuleLoader {
     return names;
   }
 
-  private exportedSymbol(
+private exportedSymbol(
     module: LoadedModule,
     symbol: string,
-  ): { kind: 'function' | 'global' | 'type'; name: string } | null {
+  ): { kind: 'function' | 'global' | 'type' | 'namespace'; name: string; targetModule?: LoadedModule } | null {
+    // 1. Buscar en funciones
     const fn = this.functions(module).find(
       item => item.exported && (item.exportName ?? item.name) === symbol,
     );
     if (fn) return { kind: 'function', name: fn.name };
 
+    // 2. Buscar en globales
     const global = module.program.body.find(
       (item): item is Extract<StatementNode, { kind: 'var_decl' | 'const_decl' }> =>
         (item.kind === 'var_decl' || item.kind === 'const_decl') &&
@@ -288,15 +298,25 @@ export class ModuleLoader {
     );
     if (global) return { kind: 'global', name: global.name };
 
+    // 3. Buscar en tipos
     const type = module.program.body.find(
       (item): item is Extract<StatementNode, { kind: 'struct_def' | 'type_alias' }> =>
         (item.kind === 'struct_def' || item.kind === 'type_alias') &&
         (item.exportName ?? item.name) === symbol,
     );
     if (type) return { kind: 'type', name: type.name };
+
+    // 4. NUEVO: Buscar en namespaces re-exportados (export import ... as symbol)
+    const nsImport = module.imports.find(
+      item => item.declaration.alias === symbol && (item.declaration as any).exported === true,
+    );
+    if (nsImport) {
+      return { kind: 'namespace', name: symbol, targetModule: nsImport.target };
+    }
+
     return null;
   }
-
+// for (const module of this.order) {
   private checkTopLevelName(
     declarations: Map<string, string>,
     duplicates: Set<string>,

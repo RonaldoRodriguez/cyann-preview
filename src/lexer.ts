@@ -88,7 +88,12 @@ export class Lexer {
             case 't': value += '\t'; break;
             case 'r': value += '\r'; break;
             case '0': value += '\0'; break;
-            default: value += esc; break;
+            case '\\': value += '\\'; break;
+            case '"': value += '"'; break;
+            default: 
+              // Conserva la barra invertida y el carácter si no es un escape estándar (ej. rutas de Windows)
+              value += '\\' + esc; 
+              break;
           }
         } else value += this.nextChar();
       }
@@ -112,7 +117,14 @@ export class Lexer {
             case 't': val += '\t'; break;
             case 'r': val += '\r'; break;
             case '0': val += '\0'; break;
-            default: val += esc; break;
+            case '\\': val += '\\'; break;
+            case '"': val += '"'; break;
+            case "'": val += "'"; break;
+            default: 
+              // Si no es un escape reconocido (ej. ruta de Windows ..\e),
+              // conservamos la barra invertida intacta junto con el carácter.
+              val += '\\' + esc; 
+              break;
           }
         } else val += this.nextChar();
       }
