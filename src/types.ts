@@ -69,6 +69,12 @@ export interface VariableNode {
   boxed?: boolean;
 }
 
+export interface DereferenceNode {
+  kind: 'dereference';
+  expr: MathNode;
+  type: MathType;
+}
+
 export interface StringNode {
   kind: 'string';
   type: 'string';
@@ -242,6 +248,7 @@ export interface ArenaForTypeNode {
 export type MathNode =
   | ConstNode
   | VariableNode
+  | DereferenceNode
   | UnaryNode
   | BinaryNode
   | StringNode

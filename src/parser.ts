@@ -1551,7 +1551,7 @@ private parsePostfix(base: MathNode): MathNode {
         const isBinaryMultiply = nextToken && (nextToken.type === 'NUMBER' || nextToken.type === 'IDENTIFIER' || nextToken.value === '(');
         
         if (!isBinaryMultiply && this.matchToken('SYMBOL', '*')) {
-          expr = { kind: 'dereference', expr: expr, type: 's32' } as unknown as MathNode;
+          expr = { kind: 'dereference', expr, type: 's32' };
           continue;
         } else {
           // Si es parte de una multiplicación, rompemos el postfix para que el parser binario lo resuelva

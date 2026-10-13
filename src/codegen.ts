@@ -8,6 +8,7 @@ import {
   StructLiteralNode, StructAccessNode, ArrayLiteralNode, ArrayAccessNode,
   CallIndirectNode, VariableNode, MakeArrayNode, CastNode, BinaryNode,
   ClosureNode, CaptureAccessNode, PatternNode, SizeOfNode, ArenaForTypeNode,
+  DereferenceNode,
 } from './types';
 import {
   StatementNode, FunctionDefNode, VarConstNode, ShortVarDeclNode,
@@ -271,12 +272,11 @@ export class ExpressionCompiler {
       }
 
       case 'dereference': {
-        const d = node as any;
         // 1. Compilamos la expresión interna (ej. p.data) para dejar su dirección en la pila
-        this.compileValue(d.expr);
+        this.compileValue(node.expr);
         
         // 2. Determinamos el tipo del valor apuntado
-        const pointeeType = d.type === 'int' ? 's32' : d.type;
+        const pointeeType = node.type;
         
         // 3. Emitimos la instrucción de lectura (load) nativa desde la memoria
         emitLoadForType(this.b, pointeeType, 0);
@@ -2387,7 +2387,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       return { addrLocal: addr, targetType: target.type };
     }
     if (target.kind === 'dereference') {
-      const d = target as any;
+      const d: DereferenceNode = target;
       const addr = `$addr_${this.ctr++}`;
       b.addLocal(addr, 'i32');
       
