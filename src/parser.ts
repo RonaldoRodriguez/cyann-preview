@@ -244,7 +244,7 @@ export class Parser {
    * ambigüedad clásica `a < b > (c)`.
    */
   private tryParseTypeArgs(): MathType[] | null {
-    if (this.currentToken.value !== '<') return null;
+    if (!this.checkValue('<')) return null;
     const lexerState = this.lexer.saveState();
     const tokenState = this.currentToken;
     try {
@@ -257,10 +257,10 @@ export class Parser {
         if (this.currentToken.value === ',') { this.advance(); continue; }
         break;
       }
-      if (this.currentToken.value !== '>') throw new Error('missing >');
+      if (!this.checkValue('>')) throw new Error('missing >');
       this.advance();
       // Debe seguir un `(` (llamada) o un `{` (struct literal).
-      if (this.currentToken.value !== '(' && this.currentToken.value !== '{') {
+      if (!this.checkValue('(') && !this.checkValue('{')) {
         throw new Error('missing ( or {');
       }
       return typeArgs;
@@ -1084,7 +1084,7 @@ export class Parser {
     }
 
     // ── Generic instance `Vec<int>` (o `Vec<T>` en un receptor) ────
-    if (this.currentToken.value === '<') {
+    if (this.checkValue('<')) {
       this.advance();
       const typeArgs: MathType[] = [];
       const argNames: string[] = [];
