@@ -77,6 +77,7 @@ export function isIntegerType(type: MathType): type is Exclude<ArithmeticType, '
 }
 // Global no definida
 export function sizeOfType(t: MathType): number {
+   if (t == null) return 4;
   if (t === 'null') return 4;
   if (t === 'tuple') return 4;
   if (typeof t === 'string') {
@@ -102,6 +103,7 @@ export function sizeOfType(t: MathType): number {
 }
 
 export function alignOfType(t: MathType): number {
+  if (t == null) return 4;
   if (t === 'null') return 4;
   if (t === 'tuple') return 4;
   if (typeof t === 'string') {
@@ -126,6 +128,20 @@ export function alignOfType(t: MathType): number {
   return 4;
 }
 
+function canonicalTypeName(t: string): string {
+  switch (t) {
+    case 'i32': case 'int': case 'int32': case 'int32_t': case 'ssize_t': case 'isize': return 's32';
+    case 'u32': case 'uint32': case 'uint32_t': case 'size_t': case 'usize': case 'uintptr': case 'uintptr_t': return 'u32';
+    case 'i64': case 'long': case 'int64': case 'int64_t': return 's64';
+    case 'u64': case 'uint64': case 'uint64_t': return 'u64';
+    case 'float': return 'f32';
+    case 'double': return 'f64';
+    case 'char': case 'byte': case 'int8_t': return 'i8';
+    default: return t;
+  }
+}
+
+
 export function typesEqual(a: MathType, b: MathType): boolean {
   if (a === b) return true;
   if (a === 'null' || b === 'null') {
@@ -134,7 +150,7 @@ export function typesEqual(a: MathType, b: MathType): boolean {
   }
 
   if (typeof a === 'string' && typeof b === 'string') {
-    return a === b;
+    return canonicalTypeName(a) === canonicalTypeName(b);
   }
 
   if (typeof a !== 'string' && typeof b !== 'string') {
@@ -160,6 +176,18 @@ export function typesEqual(a: MathType, b: MathType): boolean {
           typesEqual(field.type, b.fields[index].type)
         );
     }
+    if (a.kind === 'type_param' && b.kind === 'type_param') {
+        return a.name === b.name;
+      }
+      if (a.kind === 'generic_instance' && b.kind === 'generic_instance') {
+        if (a.baseName !== b.baseName) return false;
+        if (a.typeArgs.length !== b.typeArgs.length) return false;
+        for (let i = 0; i < a.typeArgs.length; i++) {
+          if (!typesEqual(a.typeArgs[i], b.typeArgs[i])) return false;
+        }
+        return true;
+      }
+
     if (a.kind === 'function' && b.kind === 'function') {
       if ((a.variadic ?? false) !== (b.variadic ?? false)) return false;
       if (a.paramTypes.length !== b.paramTypes.length) return false;
@@ -221,6 +249,10 @@ export function describeType(type: MathType): string {
       return `[${describeType(type.elementType)}; ${type.length}]`;
     case 'dynarray':
       return `[${describeType(type.elementType)}]`;
+    case 'type_param':
+      return type.name;
+    case 'generic_instance':
+      return `${type.baseName}<${type.typeArgs.map(describeType).join(', ')}>`;
   }
 }
 
@@ -295,43 +327,65 @@ export function computeStructLayout(
 export class TypeRegistry {
   private types = new Map<string, TypeInfo>();
 
-  constructor() {
+constructor() {
     this.registerPrimitive('void', 0, 1);
+
+    // --- Enteros de 32 bits con signo (Aliases: s32, i32, int, int32, int32_t, ssize_t, isize) ---
+    this.registerPrimitive('s32', 4, 4);
     this.registerPrimitive('i32', 4, 4);
-    this.registerPrimitive('i64', 8, 8);
-    this.registerPrimitive('f32', 4, 4);
-    this.registerPrimitive('f64', 8, 8);
-    this.registerPrimitive('byte', 1, 1);
     this.registerPrimitive('int', 4, 4);
+    this.registerPrimitive('int32', 4, 4);
+    this.registerPrimitive('int32_t', 4, 4);
+    this.registerPrimitive('ssize_t', 4, 4);
+    this.registerPrimitive('isize', 4, 4);
+
+    // --- Enteros de 64 bits con signo (Aliases: s64, i64, long, int64, int64_t) ---
+    this.registerPrimitive('s64', 8, 8);
+    this.registerPrimitive('i64', 8, 8);
     this.registerPrimitive('long', 8, 8);
+    this.registerPrimitive('int64', 8, 8);
+    this.registerPrimitive('int64_t', 8, 8);
+
+    // --- Flotantes de 32 bits (Aliases: f32, float) ---
+    this.registerPrimitive('f32', 4, 4);
     this.registerPrimitive('float', 4, 4);
+
+    // --- Flotantes de 64 bits (Aliases: f64, double) ---
+    this.registerPrimitive('f64', 8, 8);
     this.registerPrimitive('double', 8, 8);
+
+    // --- 8 bits y caracteres ---
     this.registerPrimitive('bool', 1, 1);
     this.registerPrimitive('char', 1, 1);
+    this.registerPrimitive('byte', 1, 1);
     this.registerPrimitive('i8', 1, 1);
-    this.registerPrimitive('u8', 1, 1);
-    this.registerPrimitive('i16', 2, 2);
-    this.registerPrimitive('u16', 2, 2);
-    this.registerPrimitive('u32', 4, 4);
-    this.registerPrimitive('u64', 8, 8);
     this.registerPrimitive('int8_t', 1, 1);
+    this.registerPrimitive('u8', 1, 1);
     this.registerPrimitive('uint8_t', 1, 1);
+
+    // --- 16 bits ---
+    this.registerPrimitive('i16', 2, 2);
     this.registerPrimitive('int16_t', 2, 2);
+    this.registerPrimitive('u16', 2, 2);
     this.registerPrimitive('uint16_t', 2, 2);
-    this.registerPrimitive('int32_t', 4, 4);
+
+    // --- Enteros de 32 bits sin signo (Aliases: u32, uint32, uint32_t, size_t, usize, uintptr, uintptr_t) ---
+    this.registerPrimitive('u32', 4, 4);
+    this.registerPrimitive('uint32', 4, 4);
     this.registerPrimitive('uint32_t', 4, 4);
-    this.registerPrimitive('int64_t', 8, 8);
-    this.registerPrimitive('uint64_t', 8, 8);
     this.registerPrimitive('size_t', 4, 4);
-    this.registerPrimitive('ssize_t', 4, 4);
-    this.registerPrimitive('intptr_t', 4, 4);
-    this.registerPrimitive('uintptr_t', 4, 4);
     this.registerPrimitive('usize', 4, 4);
-    this.registerPrimitive('isize', 4, 4);
     this.registerPrimitive('uintptr', 4, 4);
+    this.registerPrimitive('uintptr_t', 4, 4);
+
+    // --- Enteros de 64 bits sin signo (Aliases: u64, uint64, uint64_t) ---
+    this.registerPrimitive('u64', 8, 8);
+    this.registerPrimitive('uint64', 8, 8);
+    this.registerPrimitive('uint64_t', 8, 8);
+
+    // --- Referencias y especiales ---
     this.registerPrimitive('string', 4, 4);
   }
-
   registerPrimitive(name: string, size: number, align: number): void {
     if (this.types.has(name)) throw new Error(`El tipo '${name}' ya está registrado`);
     this.types.set(name, { kind: 'primitive', size, align, name });
@@ -466,4 +520,4 @@ export function semanticToWasmType(semType: MathType): 'i32' | 'i64' | 'f32' | '
   }
 }
 
-// Tipo no registrado
+// alignOfType

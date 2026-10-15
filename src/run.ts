@@ -22,13 +22,27 @@ type WasiRuntime = InstanceType<WasiModule['WASI']> & {
 
 type WasiConstructor = new (options: WasiOptions) => WasiRuntime;
 
+// ── NUEVO: Función auxiliar para parsear flags estilo --arena=2 --heap=16 ──
+function parseFlag(flagName: string, defaultValue: number): number {
+  for (const arg of process.argv) {
+    if (arg.startsWith(`--${flagName}=`)) {
+      const val = Number(arg.split('=')[1]);
+      return isNaN(val) ? defaultValue : val;
+    }
+  }
+  return defaultValue;
+}
+
 async function compile(inputPath: string): Promise<Uint8Array> {
   const ast = await new ModuleLoader().load(inputPath);
   const analyzed = new SemanticAnalyzer().analyzeProgram(ast);
   const optimized = new Optimizer().optimizeProgram(analyzed);
-  return new CodeGenerator(optimized).build();
-}
 
+  // Leemos las opciones de página configuradas en la terminal (ej: bun src/run.ts test.cyn --arena=2 --heap=8)
+  const arenaPages = parseFlag('arena', 1);
+  const heapPages = parseFlag('heap', 16);
+  return new CodeGenerator(optimized, { arenaPages, heapPages }).build();
+}
 /**
  * Intenta cargar una clase WASI utilizable.
  *   1. Bun built-in: `import { WASI } from 'bun'` (versiones viejas).

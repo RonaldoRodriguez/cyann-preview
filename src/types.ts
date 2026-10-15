@@ -47,8 +47,35 @@ export interface FunctionType {
   variadic?: boolean;
 }
 
+// ── NUEVO: tipos para generics ─────────────────────────────────────────
+/** Referencia a un parámetro de tipo (`T`) dentro de una plantilla. */
+export interface TypeParamRef {
+  kind: 'type_param';
+  name: string;
+}
 
-export type MathType = ArithmeticType | 'string' | 'bool' | 'null' | 'tuple' | ArrayType | DynArrayType | PointerType | StructType | FunctionType;
+/** Instanciación explícita de un tipo genérico (`Vec<int>`). No soportada
+ *  completamente aún, pero reservada para el parser. */
+export interface GenericInstance {
+  kind: 'generic_instance';
+  baseName: string;
+  typeArgs: MathType[];
+}
+// ───────────────────────────────────────────────────────────────────────
+
+export type MathType =
+  | ArithmeticType
+  | 'string'
+  | 'bool'
+  | 'null'
+  | 'tuple'
+  | ArrayType
+  | DynArrayType
+  | PointerType
+  | StructType
+  | FunctionType
+  | TypeParamRef
+  | GenericInstance;
 
 // ─────────────────────────────────────────────
 // Nodos AST (expresiones)
@@ -93,7 +120,6 @@ export interface BooleanLiteralNode {
   value: boolean;
 }
 
-
 export interface UnaryNode {
   kind: 'unary';
   op: 'neg' | 'not' | 'bitnot';
@@ -122,6 +148,7 @@ export interface CastNode {
 export interface CallNode {
   kind: 'call';
   name: string;
+  typeArgs?: MathType[];   // ← NUEVO: type args explícitos (`foo<int>(x)`)
   args: MathNode[];
   type: MathType | 'void';
   paramTypes: MathType[];
@@ -169,6 +196,7 @@ export interface ArrayAccessNode {
 export interface StructLiteralNode {
   kind: 'struct_literal';
   structName: string;
+  typeArgs?: MathType[];
   fields: { name: string; value: MathNode }[];
   type: StructType;
 }

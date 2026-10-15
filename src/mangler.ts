@@ -3,6 +3,11 @@ import { MathType, FunctionType } from './types';
 import { typesEqual } from './typeSystem';
 
 export function mangleType(t: MathType): string {
+  // Guard defensivo: si algún nodo del AST quedó con `type` sin setear,
+  // queremos un error claro en lugar de "cannot read property 'kind'".
+  if (t == null) {
+    throw new Error('mangleType: tipo undefined/null (falta asignar .type en algún nodo)');
+  }
   if (typeof t === 'string') {
     switch (t) {
       case 's32':    return 'i';
@@ -39,6 +44,17 @@ export function mangleType(t: MathType): string {
       const returns = t.returnTypes.map(mangleType).join('.');
       return 'F' + params + '~' + returns + (t.variadic ? 'V' : '');
     }
+    // ── Generics ────────────────────────────────────────────────────
+    case 'type_param': {
+      // Nunca debería llegarse aquí en codegen (se sustituye antes), pero
+      // dejamos un mangle estable por si aparece en diagnósticos.
+      return '~T~' + t.name;
+    }
+    case 'generic_instance': {
+      const args = t.typeArgs.map(mangleType).join('~');
+      return '~G~' + t.baseName + '~' + args;
+    }
+    // ─────────────────────────────────────────────────────────────────
     default: {
       const _exhaustive: never = t;
       throw new Error(`mangleType: kind no reconocido: ${JSON.stringify(_exhaustive)}`);

@@ -5,7 +5,7 @@ import type { ModuleBuilder } from './compiler';
 
 interface FunctionWithBuilder {
   name: string;
-  builder: { instructions: Array<{ op: string; name?: string; val?: number }> };
+  builder: { instructions: Array<{ op: string; name?: string; val?: any; [key: string]: any }> };
 }
 
 export class Optimizer {
@@ -97,6 +97,76 @@ export class Optimizer {
     const liveFunctionNames = this.eliminateDeadFunctions(module);
     this.eliminateDeadImports(module, liveFunctionNames);
     this.eliminateDeadStrings(module);
+    this.optimizeModuleInstructions(module);
+  }
+
+  private optimizeModuleInstructions(module: ModuleBuilder): void {
+    for (const fn of module.functions) {
+      const fnWithBuilder = fn as unknown as FunctionWithBuilder;
+      if (fnWithBuilder.builder && Array.isArray(fnWithBuilder.builder.instructions)) {
+        fnWithBuilder.builder.instructions = this.peepholeOptimize(fnWithBuilder.builder.instructions);
+      }
+    }
+  }
+
+  /**
+   * Peephole optimizer sobre el IR del compilador.
+   *
+   * Patrones soportados (todos con operandos consecutivos, sin
+   * intervenciones en la pila):
+   *
+   *   LOCAL_SET X ; LOCAL_GET X    → LOCAL_TEE X
+   *   LOCAL_GET X ; LOCAL_SET X    → ∅                (no-op)
+   *   GLOBAL_GET X ; GLOBAL_SET X  → ∅                (no-op)
+   *
+   * Notar que `global.tee` no existe en el spec de WebAssembly, así que
+   * `GLOBAL_SET X ; GLOBAL_GET X` NO se puede fusionar. Solo se elimina
+   * el par redundante GET+SET.
+   *
+   * IMPORTANTE: las instrucciones LOCAL_GET/SET/TEE usan `index` (no `val`
+   * ni `name`). Comparar `val` o `name` siempre daba `undefined === undefined`
+   * → `true`, y colapsaba pares de locales DISTINTOS, corrompiendo el flujo
+   * de la pila (p.ej. en `abs(f32)`, que mezcla f32 y f64 en un mismo bloque).
+   */
+  private peepholeOptimize(
+    instructions: Array<{ op: string; index?: number; [key: string]: any }>,
+  ): Array<any> {
+    const optimized: Array<any> = [];
+    let i = 0;
+
+    while (i < instructions.length) {
+      const curr = instructions[i];
+      const next = instructions[i + 1];
+
+      // ── LOCAL_SET X ; LOCAL_GET X  →  LOCAL_TEE X ────────────────
+      if (curr.op === 'LOCAL_SET' && next?.op === 'LOCAL_GET'
+          && curr.index === next.index) {
+        optimized.push({ ...curr, op: 'LOCAL_TEE' });
+        i += 2;
+        continue;
+      }
+
+      // ── LOCAL_GET X ; LOCAL_SET X  →  ∅ ──────────────────────────
+      // Lee X y escribe X sin efecto neto. Elimina ambos.
+      if (curr.op === 'LOCAL_GET' && next?.op === 'LOCAL_SET'
+          && curr.index === next.index) {
+        i += 2;
+        continue;
+      }
+
+      // ── GLOBAL_GET X ; GLOBAL_SET X  →  ∅ ────────────────────────
+      // Mismo caso, sin `global.tee` como opción.
+      if (curr.op === 'GLOBAL_GET' && next?.op === 'GLOBAL_SET'
+          && curr.index === next.index) {
+        i += 2;
+        continue;
+      }
+
+      optimized.push(curr);
+      i++;
+    }
+
+    return optimized;
   }
 
   private eliminateDeadFunctions(module: ModuleBuilder): Set<string> {

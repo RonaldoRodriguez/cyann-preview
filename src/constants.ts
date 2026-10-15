@@ -1,5 +1,5 @@
 /**
- * Módulo de Constant Folding (Plegado de Constantes) Independiente
+ * Módulo de Constant Folding (Plegado de Constantes) e Identidades Algebraicas
  */
 
 import type {
@@ -111,24 +111,6 @@ export function inferLiteral(raw: string): LiteralInference {
     }
     const adjusted = sign * val;
 
-    // ── Hex/bin SIN sufijo: semántica de patrón de bits.
-    //
-    // Un literal hex/bin sin sufijo no se interpreta como "número
-    // con signo", sino como una secuencia de bits. Por eso
-    // `0xCAFEBABE` (3405691582) es válido aunque no quepa en s32:
-    // su patrón de 32 bits es `-889275714` como s32, y eso es lo
-    // que se guarda. Igual que en C con `unsigned int`.
-    //
-    // Reglas:
-    //   - Si el patrón cabe en 32 bits (con o sin signo):
-    //       → s32 (con wrap, `BigInt.asIntN(32, ...)`).
-    //   - Si no, pero cabe en 64 bits:
-    //       → s64.
-    //   - Si no cabe en 64 bits: error.
-    //
-    // El sufijo `u` sigue forzando u32/u64 y el `l` fuerza s64/u64,
-    // exactamente como antes. Esto sólo afecta a literales hex/bin
-    // sin sufijo.
     if (suffix === null && (isHex || isBin)) {
       if (adjusted >= -0x80000000n && adjusted <= 0xFFFFFFFFn) {
         return { type: 's32', value: Number(BigInt.asIntN(32, adjusted)) };
@@ -174,6 +156,45 @@ function isComparisonOp(op: string): boolean {
 
 function isLogicalOp(op: string): boolean {
   return op === '&&' || op === '||';
+}
+
+// ─────────────────────────────────────────────
+// Simplificación Algebraica (Identidades y Anulaciones)
+// ─────────────────────────────────────────────
+
+function isConstValue(node: MathNode, val: number | bigint): boolean {
+  if (node.kind !== 'const') return false;
+  return Number(node.value) === Number(val);
+}
+
+function tryAlgebraicSimplify(op: string, left: MathNode, right: MathNode): MathNode | null {
+  if (op === '+' || op === 'add') {
+    if (isConstValue(left, 0)) return right;
+    if (isConstValue(right, 0)) return left;
+  }
+  if (op === '-' || op === 'sub') {
+    if (isConstValue(right, 0)) return left;
+  }
+  if (op === '*' || op === 'mul') {
+    if (isConstValue(left, 1)) return right;
+    if (isConstValue(right, 1)) return left;
+  }
+  if (op === '/' || op === 'div') {
+    if (isConstValue(right, 1)) return left;
+  }
+
+  // Anulaciones simétricas (ej: (value * 2) / 2)
+  if ((op === '/' || op === 'div') && right.kind === 'const') {
+    const cVal = right.value;
+    if (Number(cVal) !== 0 && left.kind === 'binary') {
+      if (left.op === '*' || left.op === 'mul') {
+        if (isConstValue(left.right, cVal)) return left.left;
+        if (isConstValue(left.left, cVal)) return left.right;
+      }
+    }
+  }
+
+  return null;
 }
 
 // ─────────────────────────────────────────────
@@ -229,13 +250,20 @@ function applyBinaryConst(
       }
     } else {
       const a = BigInt(aVal), b = BigInt(bVal);
+      const isSigned = signedness[resultType] === 'signed';
+      const w = width[resultType];
+      
+      // Para comparaciones con signo vs sin signo en BigInt
+      const lhs = isSigned ? BigInt.asIntN(w, a) : BigInt.asUintN(w, a);
+      const rhs = isSigned ? BigInt.asIntN(w, b) : BigInt.asUintN(w, b);
+
       switch (op) {
-        case '==': result = a === b; break;
-        case '!=': result = a !== b; break;
-        case '<':  result = a < b; break;
-        case '<=': result = a <= b; break;
-        case '>':  result = a > b; break;
-        case '>=': result = a >= b; break;
+        case '==': result = lhs === rhs; break;
+        case '!=': result = lhs !== rhs; break;
+        case '<':  result = lhs < rhs; break;
+        case '<=': result = lhs <= rhs; break;
+        case '>':  result = lhs > rhs; break;
+        case '>=': result = lhs >= rhs; break;
         default: return null;
       }
     }
@@ -361,7 +389,7 @@ function tryFoldCast(
       if (digits === '') return null;
       let val: bigint;
       try { val = BigInt(digits) * sign; } catch { return null; }
-      const converted = checkAndReturnInt(newType, val);
+      const converted = checkAndReturnInt(newType as ArithmeticType, val);
       if (converted) return { kind: 'const', type: converted.type, value: converted.value };
     }
     return null;
@@ -384,7 +412,7 @@ function tryFoldCast(
   if (oldType === 'bool' && isIntegerType(newType)) {
     const boolNode = operand as BooleanLiteralNode;
     const value = boolNode.value ? 1n : 0n;
-    const converted = checkAndReturnInt(newType, value);
+    const converted = checkAndReturnInt(newType as ArithmeticType, value);
     if (converted) return { kind: 'const', type: converted.type, value: converted.value };
     return null;
   }
@@ -406,14 +434,6 @@ function tryFoldCast(
       const isSigned = signedness[to] === 'signed';
       const converted = isSigned ? BigInt.asIntN(resultWidth, bigVal) : BigInt.asUintN(resultWidth, bigVal);
 
-      if (isSigned) {
-        const min = -(2n ** BigInt(resultWidth - 1));
-        const max = 2n ** BigInt(resultWidth - 1) - 1n;
-        if (bigVal < min || bigVal > max) return null;
-      } else {
-        const max = 2n ** BigInt(resultWidth) - 1n;
-        if (bigVal < 0n || bigVal > max) return null;
-      }
       return { kind: 'const', type: to, value: resultWidth === 32 ? Number(converted) : converted };
     }
 
@@ -437,11 +457,6 @@ function tryFoldCast(
 // Función Principal Exportada
 // ─────────────────────────────────────────────
 
-/**
- * Plega constantes recursivamente en un AST de expresiones (MathNode).
- * Si la subexpresión completa puede resolverse a nivel de compilación,
- * retorna un nodo hoja simplificado ('const', 'bool' o 'string').
- */
 export function foldConstants(node: MathNode): MathNode {
   if (
     node.kind === 'const' ||
@@ -493,6 +508,10 @@ export function foldConstants(node: MathNode): MathNode {
   if (node.kind === 'binary') {
     const left = foldConstants(node.left);
     const right = foldConstants(node.right);
+
+    const algebraicResult = tryAlgebraicSimplify(node.op, left, right);
+    if (algebraicResult) return algebraicResult;
+
     if (
       (left.kind === 'const' || left.kind === 'bool') &&
       (right.kind === 'const' || right.kind === 'bool')
@@ -516,7 +535,7 @@ export function foldConstants(node: MathNode): MathNode {
   if (node.kind === 'interpolated_string') {
     return {
       ...node,
-      parts: node.parts.map(part => typeof part === 'string' ? part : foldConstants(part)),
+      parts: (node as any).parts.map((part: any) => typeof part === 'string' ? part : foldConstants(part)),
     };
   }
 

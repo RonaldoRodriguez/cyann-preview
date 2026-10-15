@@ -2,6 +2,7 @@ import { FunctionIRBuilder, ModuleBuilder } from './compiler';
 import type { AnalyzedProgram } from './semantic';
 import { Optimizer } from './optimizer';
 import { formatDiagnostic } from './diagnostics';
+import { isGenericReceiver } from './semantic/registration';
 import {
   MathType, MathNode, BooleanLiteralNode, CallNode,
   FunctionRefNode, ArithmeticType, StructType,
@@ -20,7 +21,10 @@ import {
   sizeOfType, typesEqual, semanticToWasmType, maxArithmeticType,
   signedness, width, arithInfo, isArithmeticType, isIntegerType,
 } from './typeSystem';
+//  for (const s of stmts) {
 
+
+//  for (const s of stmts) {
 export type CompileResult = MathType | 'void';
 // case 'cast':
 const HEAP_PAGES = 16;
@@ -1202,33 +1206,43 @@ export class ExpressionCompiler {
 // CodeGenerator
 // ─────────────────────────────────────────────────────────────────────
 export class CodeGenerator {
-  private modular: ModuleBuilder;
-  private startBuilder: FunctionIRBuilder;
-  private ctr = 0;
-  private _labelStack: { breakLabel: string; continueLabel: string | null; name: string | null }[] = [];
-  private _regionStack: string[] = [];
-  private envFunctions: Set<string> = new Set();
-  private zeroCaptureClosures: Set<string> = new Set();
-  private envBaseAddr = 0;
-  private envOffsets = new Map<string, number>();
-  private heapStartAddr = 0;
+    private modular: ModuleBuilder;
+    private startBuilder: FunctionIRBuilder;
+    private ctr = 0;
+    private _labelStack: { breakLabel: string; continueLabel: string | null; name: string | null }[] = [];
+    private _regionStack: string[] = [];
+    private envFunctions: Set<string> = new Set();
+    private zeroCaptureClosures: Set<string> = new Set();
+    private envBaseAddr = 0;
+    private envOffsets = new Map<string, number>();
+    private heapStartAddr = 0;
 
-  constructor(program: AnalyzedProgram) {
-    const stmts = program.body;
-    this.modular = new ModuleBuilder();
-    this.modular.addMemory(1);
-    this.modular.addExport('memory', 'memory', 0);
+    // ── NUEVO: Configuración de páginas y banderas modulares ──
+    private arenaPages: number;
+    private heapPages: number;
+    
+    private usesArena = false;   // Se activa con 'region' (arena temporal)
+    private usesHeap = false;    // Se activa con estructuras, dynarrays o asignaciones dinámicas
+    private usesMemory = false;  // Se activa con strings, datos estáticos o variables globales/lvalues
 
-    for (const s of stmts) if (s.kind === 'import_decl') this.declareImport(s as ImportDeclNode);
+  constructor(program: AnalyzedProgram, options?: { arenaPages?: number; heapPages?: number }) {
+        this.arenaPages = options?.arenaPages ?? 1;   // Por defecto 1 página (64 KB) para arena si se usa
+        this.heapPages = options?.heapPages ?? 16;  // Por defecto 16 páginas (1 MB) iniciales para heap si se usa
 
-    const {
-      all: functionRefs,
-      zeroCapture: zeroCaptureClosures,
-    } = this.collectFunctionRefs(stmts);
-    this.envFunctions = functionRefs;
-    this.zeroCaptureClosures = zeroCaptureClosures;
-    let slot = 0;
-    for (const name of functionRefs) this.modular.addFunctionToTable(name, slot++);
+        const stmts = program.body;
+        this.modular = new ModuleBuilder();
+        // OJO: Ya NO llamamos a addMemory(1) ni addGlobal aquí al inicio.
+
+        for (const s of stmts) if (s.kind === 'import_decl') this.declareImport(s as ImportDeclNode);
+
+        const {
+            all: functionRefs,
+            zeroCapture: zeroCaptureClosures,
+        } = this.collectFunctionRefs(stmts);
+        this.envFunctions = functionRefs;
+        this.zeroCaptureClosures = zeroCaptureClosures;
+        let slot = 0;
+        for (const name of functionRefs) this.modular.addFunctionToTable(name, slot++);
 
     const exportNameCounts = new Map<string, number>();
     for (const stmt of stmts) {
@@ -1240,83 +1254,166 @@ export class CodeGenerator {
       }
     }
 
-    for (const s of stmts) {
-      if (s.kind !== 'function_def') continue;
-      const fn = s as FunctionDefNode;
-      this.compileFunction(fn);
-      if (fn.wasmExport) {
+        for (const s of stmts) {
+            if (s.kind !== 'function_def') continue;
+            const fn = s as FunctionDefNode;
+            // ── Skip de templates genéricos ──────────────────────────
+            // Funciones con type params propios (`identity<T>`) o
+            // métodos con receptores genéricos (`[Vec<T>] func ...`).
+            // Se instancian on-demand durante el análisis semántico y
+            // sólo las instancias concretas llegan hasta acá.
+            if (fn.typeParams && fn.typeParams.length > 0) continue;
+            if (fn.receiver && isGenericReceiver(fn.receiver)) continue;
+            // ─────────────────────────────────────────────────────────
+            this.compileFunction(fn);
+            if (fn.wasmExport) {
         const publicName = fn.wasmExportName ?? fn.exportName ?? fn.name;
         const exportName = exportNameCounts.get(publicName) === 1
           ? publicName
           : `${publicName}$${fn.name}`;
         this.modular.addExport(exportName, 'function', fn.name);
       }
+        }
+
+        this.startBuilder = new FunctionIRBuilder([], [], [], this.modular);
+
+        for (const s of stmts) {
+            if (s.kind === 'function_def') continue;
+            if (s.kind === 'struct_def') continue;
+            if (s.kind === 'type_alias') continue;
+            if (s.kind === 'import_decl') continue;
+            this.compileStatement(s, this.startBuilder, true);
+        }
+        this.startBuilder.finalize();
+
+    // Recolectar variables de entorno (closures / env)
+        const envNames = new Set<string>();
+        const scanInstrs = (instrs: any[]) => {
+            for (const i of instrs) {
+                if (i.op === 'ENV_ADDR_BY_NAME') envNames.add(i.name);
+            }
+        };
+        for (const fn of this.modular.functions) scanInstrs(fn.builder.instructions);
+        scanInstrs(this.startBuilder.instructions);
+
+        this.modular.ensureStringData();
+
+        // ── DETECCIÓN DE BUILTINS DEL RUNTIME ────────────────────────────
+        // Los builtins declarados en semantic.ts (arena_alloc, info_heap_*,
+        // str_*, etc.) sólo se emiten cuando realmente se usan. Escaneamos
+        // las instrucciones ya generadas para descubrirlos y activar así
+        // usesArena / usesHeap / usesMemory antes del layout de memoria.
+        const calledBuiltins = new Set<string>();
+        const scanBuiltins = (instrs: any[]): void => {
+            for (const i of instrs) {
+                if (i.op === 'CALL_BY_NAME') calledBuiltins.add(i.name);
+            }
+        };
+        for (const fn of this.modular.functions) scanBuiltins(fn.builder.instructions);
+        scanBuiltins(this.startBuilder.instructions);
+
+        // arena_alloc / arena_save / arena_restore → activan la arena.
+        if (calledBuiltins.has('arena_alloc') ||
+            calledBuiltins.has('arena_save') ||
+            calledBuiltins.has('arena_restore')) {
+            this.usesArena = true;
+        }
+
+        // info_heap_* / __heap_grow → activan el heap dinámico.
+        if (calledBuiltins.has('__heap_grow') ||
+            calledBuiltins.has('info_heap_start_ptr') ||
+            calledBuiltins.has('info_heap_end_ptr')) {
+            this.usesHeap = true;
+        }
+
+        // Cualquier builtin del runtime implica que la memoria debe existir.
+        for (const name of calledBuiltins) {
+            if (name === 'arena_alloc' || name === 'arena_save' || name === 'arena_restore' ||
+                name === '__heap_grow' || name === 'info_heap_start_ptr' || name === 'info_heap_end_ptr' ||
+                name.startsWith('str_') || name.startsWith('__unsafe__mem_') ||
+                name.endsWith('_to_string')) {
+                this.usesMemory = true;
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────
+
+        if (envNames.size > 0) {
+            this.usesMemory = true;
+            const base = this.modular.getStaticDataEnd(4);
+            const data: number[] = [];
+            let cursor = 0;
+            for (const name of envNames) {
+                this.envOffsets.set(name, cursor);
+                data.push(0, 0, 0, 0);
+                cursor += 4;
+            }
+            this.modular.addDataSegment(base, data);
+            this.envBaseAddr = base;
+        }
+
+        // Si hay datos estáticos o strings, aseguramos que la memoria se active
+        if (this.modular.dataSegments.length > 0 || (this.modular.getStringPoolOrNull()?.getAllEntries().length ?? 0) > 0) {
+            this.usesMemory = true;
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // ── LAYOUT SECUENCIAL DINÁMICO Y PEREZOSO ────────────────────
+        // ─────────────────────────────────────────────────────────────
+        const PAGE_SIZE = 65536;
+        let currentOffset = this.modular.getStaticDataEnd(8);
+
+        let arenaStart = 0;
+        let arenaEnd = 0;
+        let heapStart = 0;
+        let heapEnd = 0;
+
+        // 1. Inyectar Arena solo si el programa usó 'region' o alocaciones temporales
+        if (this.usesArena) {
+            arenaStart = currentOffset;
+            arenaEnd = arenaStart + (this.arenaPages * PAGE_SIZE);
+            currentOffset = arenaEnd;
+            this.usesMemory = true;
+        }
+
+        // 2. Inyectar Heap solo si el programa usó estructuras, dynarrays o dinámicos
+        if (this.usesHeap) {
+            heapStart = currentOffset;
+            this.heapStartAddr = heapStart;
+            heapEnd = heapStart + (this.heapPages * PAGE_SIZE);
+            currentOffset = heapEnd;
+            this.usesMemory = true;
+        }
+
+        // 3. Si se requiere memoria por cualquiera de las capas activas:
+        if (this.usesMemory) {
+            const totalBytesNeeded = currentOffset;
+            const initialPages = Math.max(1, Math.ceil(totalBytesNeeded / PAGE_SIZE));
+
+            this.modular.addMemory(initialPages);
+            this.modular.addExport('memory', 'memory', 0);
+
+            // Registrar globales condicionalmente
+            if (this.usesArena) {
+                this.modular.addGlobal(RT_PTR, 'i32', true, arenaStart);      
+                this.modular.addGlobal('__arena_end', 'i32', true, arenaEnd);  
+            }
+
+            if (this.usesHeap) {
+                this.modular.addGlobal(RT_MEM_END, 'i32', true, heapEnd);      
+            }
+
+            // Inicializar helpers del runtime de forma condicional
+            this.setupConditionalRuntime(this.usesArena, this.usesHeap);
+
+            if (initialPages > this.modular.memoryInitial) {
+                this.modular.memoryInitial = initialPages;
+            }
+        }
+        // ─────────────────────────────────────────────────────────────
+
+        this.modular.addFunctionInstance('_start', this.startBuilder);
+        this.modular.addExport('_start', 'function', '_start');
     }
-
-    this.startBuilder = new FunctionIRBuilder([], [], [], this.modular);
-
-    for (const s of stmts) {
-      if (s.kind === 'function_def') continue;
-      if (s.kind === 'struct_def') continue;
-      if (s.kind === 'type_alias') continue;
-      if (s.kind === 'import_decl') continue;
-      this.compileStatement(s, this.startBuilder, true);
-    }
-    this.startBuilder.finalize();
-
-    const envNames = new Set<string>();
-    const scanInstrs = (instrs: any[]) => {
-      for (const i of instrs) {
-        if (i.op === 'ENV_ADDR_BY_NAME') envNames.add(i.name);
-      }
-    };
-    for (const fn of this.modular.functions) scanInstrs(fn.builder.instructions);
-    scanInstrs(this.startBuilder.instructions);
-
-    this.modular.ensureStringData();
-
-    if (envNames.size > 0) {
-      const base = this.modular.getStaticDataEnd(4);
-      const data: number[] = [];
-      let cursor = 0;
-      for (const name of envNames) {
-        this.envOffsets.set(name, cursor);
-        data.push(0, 0, 0, 0);
-        cursor += 4;
-      }
-      this.modular.addDataSegment(base, data);
-      this.envBaseAddr = base;
-    }
-
-        // 1. Definimos constantes de tamaño
-const ARENA_SIZE = 65536;        // 64 KB fijos para la arena temporal del compilador
-const HEAP_INITIAL_SIZE = 1024 * 1024; // 1 MB inicial para el heap dinámico
-
-const staticEnd = this.modular.getStaticDataEnd(8);
-
-const arenaStart = staticEnd;
-const arenaEnd = arenaStart + ARENA_SIZE;
-
-// Asignamos a la propiedad de la clase
-this.heapStartAddr = arenaEnd;
-const heapEndAddr = this.heapStartAddr + HEAP_INITIAL_SIZE;
-
-const totalBytesNeeded = heapEndAddr;
-const initialPages = Math.ceil(totalBytesNeeded / PAGE_SIZE);
-const memEnd = initialPages * PAGE_SIZE;
-
-this.modular.addGlobal(RT_PTR, 'i32', true, arenaStart);      
-this.modular.addGlobal('__arena_end', 'i32', true, arenaEnd); 
-this.modular.addGlobal(RT_MEM_END, 'i32', true, memEnd);      
-
-this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
-
-    this.modular.addFunctionInstance('_start', this.startBuilder);
-    this.modular.addExport('_start', 'function', '_start');
-
-    if (initialPages > this.modular.memoryInitial) this.modular.memoryInitial = initialPages;
-
-  }
 
   public build(): Uint8Array {
     new Optimizer().optimizeModule(this.modular);
@@ -1354,7 +1451,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       seg.data[off + 3] = (idx >> 24) & 0xFF;
     }
   }
-
+// case 'region': {
   public toWat(): string { return this.modular.toWat(); }
 
   private collectFunctionRefs(stmts: StatementNode[]): {
@@ -1437,98 +1534,102 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
     this.modular.addFunctionImportAlias(id.module, id.field, id.name, wp, wr);
   }
 
-  private setupRuntime(): void {
+private setupConditionalRuntime(hasArena: boolean, hasHeap: boolean): void {
     const m = this.modular;
     const ALIGN = 8;
     const MASK = ALIGN - 1;
     const NEGMASK = (~MASK) | 0;
 
-    m.addFunction(RT_SAVE, [], 'i32', (b) => {
-      b.globalGet(RT_PTR);
-    });
-    m.addFunction(RT_RESTORE, ['i32'], null, (b) => {
-      b.getLocal('mark');
-      b.globalSet(RT_PTR);
-    }, ['mark']);
+    if (hasArena) {
+      m.addFunction(RT_SAVE, [], 'i32', (b) => {
+        b.globalGet(RT_PTR);
+      });
+      m.addFunction(RT_RESTORE, ['i32'], null, (b) => {
+        b.getLocal('mark');
+        b.globalSet(RT_PTR);
+      }, ['mark']);
 
+      m.addFunction(RT_ALLOC, ['i32'], 'i32', (b) => {
+        const aligned = b.addLocal('$aligned', 'i32');
+        const end     = b.addLocal('$end', 'i32');
 
-    m.addFunction(RT_ALLOC, ['i32'], 'i32', (b) => {
-     const aligned = b.addLocal('$aligned', 'i32');
-     const end     = b.addLocal('$end', 'i32');
+        b.globalGet(RT_PTR);
+        b.i32Const(MASK);
+        b.i32Add();
+        b.i32Const(NEGMASK);
+        b.i32And();
+        b.setLocal(aligned);
 
-     b.globalGet(RT_PTR);
-     b.i32Const(MASK);
-     b.i32Add();
-     b.i32Const(NEGMASK);
-     b.i32And();
-     b.setLocal(aligned);
+        b.getLocal(aligned);
+        b.getLocal('size');
+        b.i32Add();
+        b.setLocal(end);
 
-     b.getLocal(aligned);
-     b.getLocal('size');
-     b.i32Add();
-     b.setLocal(end);
+        // Validación estricta contra el límite de la arena fija (__arena_end).
+        // Este bloque sólo se emite cuando hasArena = true, así que siempre
+        // está activo cuando RT_ALLOC existe.
+        b.getLocal(end);
+        b.globalGet('__arena_end');
+        b.i32GtU();
+        b.if_('void');
+          b.unreachable(); // Desbordamiento de la arena
+        b.end();
 
-     // Validación estricta contra el límite de la arena fija (__arena_end)
-     b.getLocal(end);
-     b.globalGet('__arena_end');
-     b.i32GtU();
-     b.if_('void');
-       b.unreachable(); // Desbordamiento de la arena: colapso seguro sin robar memoria al heap
-     b.end();
+        b.getLocal(end);
+        b.globalSet(RT_PTR);
 
-     b.getLocal(end);
-     b.globalSet(RT_PTR);
+        b.getLocal(aligned);
+      }, ['size']);
+    }
 
-     b.getLocal(aligned);
-   }, ['size']);
+    if (hasHeap) {
+      // 1. Crecimiento dinámico del Heap mediante memory.grow()
+      m.addFunction('__heap_grow', ['i32'], 'i32', (b) => {
+        const pagesNeeded = b.addLocal('$pages_needed', 'i32');
+        const oldPages    = b.addLocal('$old_pages', 'i32');
 
+        // Calcular páginas necesarias (extra_bytes / 65536)
+        b.getLocal('extra_bytes');
+        b.i32Const(PAGE_SIZE - 1);
+        b.i32Add();
+        b.i32Const(LOG2_PAGE_SIZE);
+        b.i32ShrU();
+        b.setLocal(pagesNeeded);
 
-    // 1. Crecimiento dinámico del Heap mediante memory.grow()
-   m.addFunction('__heap_grow', ['i32'], 'i32', (b) => {
-     const pagesNeeded = b.addLocal('$pages_needed', 'i32');
-     const oldPages    = b.addLocal('$old_pages', 'i32');
+        b.getLocal(pagesNeeded);
+        b.memoryGrow();
+        b.setLocal(oldPages);
 
-     // Calcular páginas necesarias (extra_bytes / 65536)
-     b.getLocal('extra_bytes');
-     b.i32Const(PAGE_SIZE - 1);
-     b.i32Add();
-     b.i32Const(LOG2_PAGE_SIZE);
-     b.i32ShrU();
-     b.setLocal(pagesNeeded);
+        // Si memory.grow retorna -1, falló la asignación del sistema
+        b.getLocal(oldPages);
+        b.i32Const(-1);
+        b.i32Eq();
+        b.if_('void');
+          b.i32Const(0); // 0 = Fallo
+          b.return_();
+        b.end();
 
-     b.getLocal(pagesNeeded);
-     b.memoryGrow();
-     b.setLocal(oldPages);
+        // Actualizar RT_MEM_END con el nuevo espacio ganado
+        b.globalGet(RT_MEM_END);
+        b.getLocal(pagesNeeded);
+        b.i32Const(LOG2_PAGE_SIZE);
+        b.i32Shl();
+        b.i32Add();
+        b.globalSet(RT_MEM_END);
 
-     // Si memory.grow retorna -1, falló la asignación del sistema
-     b.getLocal(oldPages);
-     b.i32Const(-1);
-     b.i32Eq();
-     b.if_('void');
-       b.i32Const(0); // 0 = Falo
-       b.return_();
-     b.end();
+        b.i32Const(1); // 1 = Éxito
+      }, ['extra_bytes']);
 
-     // Actualizar RT_MEM_END con el nuevo espacio ganado
-     b.globalGet(RT_MEM_END);
-     b.getLocal(pagesNeeded);
-     b.i32Const(LOG2_PAGE_SIZE);
-     b.i32Shl();
-     b.i32Add();
-     b.globalSet(RT_MEM_END);
+      // 2. Consulta del inicio físico del heap
+      m.addFunction('info_heap_start_ptr', [], 'i32', (b) => {
+        b.i32Const(this.heapStartAddr);
+      });
 
-     b.i32Const(1); // 1 = Éxito
-   }, ['extra_bytes']);
-// heapStartAddr
-   // 2. Consulta del inicio físico del heap
-   m.addFunction('info_heap_start_ptr', [], 'i32', (b) => {
-     b.i32Const(this.heapStartAddr);
-   });
-
-   // 3. Consulta dinámica del límite actual del heap (lee RT_MEM_END)
-   m.addFunction('info_heap_end_ptr', [], 'i32', (b) => {
-     b.globalGet(RT_MEM_END);
-   });
+      // 3. Consulta dinámica del límite actual del heap (lee RT_MEM_END)
+      m.addFunction('info_heap_end_ptr', [], 'i32', (b) => {
+        b.globalGet(RT_MEM_END);
+      });
+    }
 
     m.addFunction('__unsafe__mem_memcpy', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('dst');
@@ -1547,28 +1648,29 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
     m.addFunction('__unsafe__mem_read32', ['i32', 'i32'], 'i32', (b) => { 
       b.getLocal('addr'); 
       b.getLocal('offset');
-      b.i32Add()
+      b.i32Add();
       b.i32Load(); 
     }, ['addr', 'offset']);
 
-        m.addFunction('__unsafe__mem_read32i', ['i32', 'i32'], 'i32', (b) => { 
+    m.addFunction('__unsafe__mem_read32i', ['i32', 'i32'], 'i32', (b) => { 
       b.getLocal('addr'); 
       b.getLocal('offset');
-      b.i32Add()
+      b.i32Add();
       b.i32Load(); 
     }, ['addr', 'offset']);
 
     m.addFunction('__unsafe__mem_write32', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('addr'); 
       b.getLocal('offset');
-      b.i32Add()
+      b.i32Add();
       b.getLocal('v'); 
       b.i32Store();
     }, ['addr', 'v', 'offset']);
+    
     m.addFunction('__unsafe__mem_write32i', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('addr'); 
       b.getLocal('offset');
-      b.i32Add()
+      b.i32Add();
       b.getLocal('v'); 
       b.i32Store();
     }, ['addr', 'v', 'offset']);
@@ -1576,13 +1678,14 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
     m.addFunction('__unsafe__mem_read8', ['i32', 'i32'], 'i32', (b) => { 
       b.getLocal('addr');
       b.getLocal('offset');
-      b.i32Add() 
+      b.i32Add();
       b.i32Load8U();
     }, ['addr', 'offset']);
+    
     m.addFunction('__unsafe__mem_write8', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('addr'); 
       b.getLocal('offset');
-      b.i32Add() 
+      b.i32Add();
       b.getLocal('v'); 
       b.i32Store8();
     }, ['addr', 'v', 'offset']);
@@ -1592,7 +1695,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.getLocal('addr'); 
       b.getLocal('offset');
       b.i32Add(); 
-      b.i32Load16U(); // Carga de 16 bits sin signo (o i32.load16S si prefieres con signo)
+      b.i32Load16U();
     }, ['addr', 'offset']);
 
     m.addFunction('__unsafe__mem_write16', ['i32', 'i32', 'i32'], null, (b) => {
@@ -1604,7 +1707,6 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
     }, ['addr', 'v', 'offset']);
 
     // --- Lectura y Escritura de 64 bits (para i64) ---
-    // Nota: WebAssembly maneja i64 de forma nativa con sus propias instrucciones de carga/almacenamiento
     m.addFunction('__unsafe__mem_read64', ['i32', 'i32'], 'i64', (b) => { 
       b.getLocal('addr'); 
       b.getLocal('offset');
@@ -1612,7 +1714,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.i64Load(); 
     }, ['addr', 'offset']);
 
-    m.addFunction('__unsafe__mem_write64', ['i32', 'i64', 'i32'], null, (b) => {
+    m.addFunction('__unsafe__mem_write64', ['i32', 'i32', 'i32'], null, (b) => {
       b.getLocal('addr'); 
       b.getLocal('offset');
       b.i32Add(); 
@@ -1633,10 +1735,6 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.end();
     }, ['value']);
 
-        /*m.addFunction('__ptr_to_string', ['i32'], 'i32', (b) => {
-      b.getLocal('value');
-    }, ['value']);*/
-// 'interpolated_string'
     const addIntegerToString = (name: string, unsigned: boolean): void => {
       m.addFunction(name, ['i32'], 'i32', (b) => {
         b.addLocal('negative', 'i32');
@@ -1705,6 +1803,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
         b.getLocal('result'); b.i32Const(4); b.i32Add();
       }, ['value']);
     };
+    
     addIntegerToString('__s32_to_string', false);
     addIntegerToString('__u32_to_string', true);
 
@@ -1757,12 +1856,6 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
     }, ['a', 'b']);
 
     m.addFunction('str_concat', ['i32', 'i32'], 'i32', (b) => {
-      // len_a: i32
-      // len_b: i32
-      // buf: i32
-      // len_a = *(a - 4)
-      // len_b = *(b - 4)
-      // buf = alloc((len_a + len_b) + 4)
       b.addLocal('len_a', 'i32'); b.addLocal('len_b', 'i32'); b.addLocal('buf', 'i32');
       b.getLocal('a'); b.i32Const(4); b.i32Sub(); b.i32Load(); b.setLocal('len_a');
       b.getLocal('b'); b.i32Const(4); b.i32Sub(); b.i32Load(); b.setLocal('len_b');
@@ -1776,15 +1869,8 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.getLocal('b'); b.getLocal('len_b'); b.callByName('__unsafe__mem_memcpy');
       b.getLocal('buf'); b.i32Const(4); b.i32Add();
     }, ['a', 'b']);
-    m.addFunction('int_to_string', ['i32'], 'i32', (b) => {
-      // Locals:
-      // temp: i32 (para contar y extraer dígitos)
-      // digits: i32 (contador de dígitos)
-      // alloc_ptr: i32 (puntero base devuelto por el alocador)
-      // str_ptr: i32 (alloc_ptr + 4, el puntero oficial del string)
-      // p: i32 (puntero móvil para escribir los caracteres de atrás hacia adelante)
-      // rem: i32 (residuo de la división por 10)
 
+    m.addFunction('int_to_string', ['i32'], 'i32', (b) => {
       b.addLocal('temp', 'i32');
       b.addLocal('digits', 'i32');
       b.addLocal('alloc_ptr', 'i32');
@@ -1792,15 +1878,12 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       b.addLocal('p', 'i32');
       b.addLocal('rem', 'i32');
 
-      // Inicializar contador de dígitos en 0
       b.i32Const(0);
       b.setLocal('digits');
 
-      // temp = value
       b.getLocal('value');
       b.setLocal('temp');
 
-      // Si el valor es exactamente 0, tiene 1 dígito ('0')
       b.getLocal('value');
       b.i32Const(0);
       b.i32Eq();
@@ -1808,7 +1891,6 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
         b.i32Const(1);
         b.setLocal('digits');
       b.else_();
-        // Bucle para contar cuántos dígitos tiene el número
         b.block('void', 'count_done');
         b.loop('void', 'count_loop');
           b.getLocal('temp');
@@ -1816,13 +1898,11 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
           b.i32Eq();
           b.brIfTo('count_done');
 
-          // digits++
           b.getLocal('digits');
           b.i32Const(1);
           b.i32Add();
           b.setLocal('digits');
 
-          // temp = temp / 10 (división sin signo)
           b.getLocal('temp');
           b.i32Const(10);
           b.i32DivU();
@@ -1832,36 +1912,29 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
         b.end(); b.end();
       b.end();
 
-      // --- Alocación en el Heap ---
-      // Tamaño total = 4 bytes (header de longitud) + cantidad de dígitos
       b.getLocal('digits');
       b.i32Const(4);
       b.i32Add();
       b.callByName(RT_ALLOC);
       b.setLocal('alloc_ptr');
 
-      // Guardar la longitud en la cabecera (alloc_ptr)
       b.getLocal('alloc_ptr');
       b.getLocal('digits');
       b.i32Store();
 
-      // str_ptr = alloc_ptr + 4 (este es el puntero que usarán las funciones de string)
       b.getLocal('alloc_ptr');
       b.i32Const(4);
       b.i32Add();
       b.setLocal('str_ptr');
 
-      // p = str_ptr + digits (apunta al final de los caracteres para escribir hacia atrás)
       b.getLocal('str_ptr');
       b.getLocal('digits');
       b.i32Add();
       b.setLocal('p');
 
-      // Restaurar temp = value para escribir los dígitos
       b.getLocal('value');
       b.setLocal('temp');
 
-      // Si el valor es 0, escribimos directamente el carácter '0' (ASCII 48)
       b.getLocal('value');
       b.i32Const(0);
       b.i32Eq();
@@ -1870,7 +1943,6 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
         b.i32Const(48);
         b.i32Store8();
       b.else_();
-        // Bucle de escritura de dígitos de atrás hacia adelante
         b.block('void', 'write_done');
         b.loop('void', 'write_loop');
           b.getLocal('digits');
@@ -1878,32 +1950,27 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
           b.i32Eq();
           b.brIfTo('write_done');
 
-          // rem = temp % 10
           b.getLocal('temp');
           b.i32Const(10);
           b.i32RemU();
           b.setLocal('rem');
 
-          // temp = temp / 10
           b.getLocal('temp');
           b.i32Const(10);
           b.i32DivU();
           b.setLocal('temp');
 
-          // p-- (moverse un byte hacia atrás)
           b.getLocal('p');
           b.i32Const(1);
           b.i32Sub();
           b.setLocal('p');
 
-          // Guardar byte: [p] = rem + 48 ('0')
           b.getLocal('p');
           b.getLocal('rem');
           b.i32Const(48);
           b.i32Add();
           b.i32Store8();
 
-          // digits--
           b.getLocal('digits');
           b.i32Const(1);
           b.i32Sub();
@@ -1913,13 +1980,12 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
         b.end(); b.end();
       b.end();
 
-      // Retornar el puntero oficial del string (str_ptr)
       b.getLocal('str_ptr');
     }, ['value']);
 
     m.addFunction('__ptr_to_string', ['i32'], 'i32', (b) => {
       b.getLocal('value');
-      b.callByName('int_to_string')
+      b.callByName('int_to_string');
     }, ['value']);
   }
 
@@ -2228,6 +2294,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
       }
 
       case 'region': {
+        this.usesArena = true;
         const r = stmt as RegionNode;
         const mark = `$region_mark_${this.ctr++}`;
         b.addLocal(mark, 'i32');
@@ -2262,7 +2329,7 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
         b.brTo(ctx.breakLabel);
         break;
       }
-
+// CodeGenerator
       case 'continue': {
         const ct = stmt as ContinueNode;
         const name = ct.label ?? null;
@@ -2471,3 +2538,4 @@ this.setupRuntime(); // Se llama después para que la propiedad ya tenga valor
     }
   }
 }
+// info_heap_start_ptr

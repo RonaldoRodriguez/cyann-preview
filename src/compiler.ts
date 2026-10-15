@@ -1786,6 +1786,73 @@ addGlobal(
         this.prepareStringData();
         this.elements = [];
 
+        // ─────────────────────────────────────────────
+        // Purgar tipos huérfanos (Type Tree-Shaking)
+        // ─────────────────────────────────────────────
+        const usedTypeIndexes = new Set<number>();
+        
+        // 1. Recolectar tipos de las funciones locales
+        for (const fn of this.functions) {
+            if (fn.typeIdx !== undefined) usedTypeIndexes.add(fn.typeIdx);
+        }
+        
+        // 2. Recolectar tipos de las importaciones externas (externals)
+        for (const ext of this.externals) {
+            if (ext.typeIdx !== undefined) usedTypeIndexes.add(ext.typeIdx);
+        }
+
+        // 3. Recolectar tipos de llamadas indirectas en las instrucciones
+        for (const fn of this.functions) {
+            if (fn.builder && Array.isArray(fn.builder.instructions)) {
+                for (const instr of fn.builder.instructions) {
+                    if (instr.op === 'CALL_INDIRECT' && instr.typeIdx !== undefined) {
+                      usedTypeIndexes.add(instr.typeIdx);
+                    }
+                }
+            }
+        }
+
+        // 4. Reindexar y comprimir la tabla de tipos si hay sobrantes
+        if (usedTypeIndexes.size < this.types.length) {
+            const typeRemap = new Map<number, number>();
+            const newTypes: typeof this.types = [];
+
+            for (let oldIdx = 0; oldIdx < this.types.length; oldIdx++) {
+                if (usedTypeIndexes.has(oldIdx)) {
+                    typeRemap.set(oldIdx, newTypes.length);
+                    newTypes.push(this.types[oldIdx]);
+                }
+            }
+
+            this.types = newTypes;
+
+            // Actualizar referencias en funciones locales
+            for (const fn of this.functions) {
+                if (fn.typeIdx !== undefined && typeRemap.has(fn.typeIdx)) {
+                    fn.typeIdx = typeRemap.get(fn.typeIdx)!;
+                }
+            }
+
+            // Actualizar referencias en importaciones/externals
+            for (const ext of this.externals) {
+                if (ext.typeIdx !== undefined && typeRemap.has(ext.typeIdx)) {
+                    ext.typeIdx = typeRemap.get(ext.typeIdx)!;
+                }
+            }
+
+            // Actualizar referencias en call_indirect dentro del IR
+            for (const fn of this.functions) {
+                if (fn.builder && Array.isArray(fn.builder.instructions)) {
+                    for (const instr of fn.builder.instructions) {
+                        if (instr.op === 'CALL_INDIRECT' && instr.typeIdx !== undefined && typeRemap.has(instr.typeIdx)) {
+                          instr.typeIdx = typeRemap.get(instr.typeIdx)!;
+                        }
+                    }
+                }
+            }
+        }
+        // ─────────────────────────────────────────────
+
         const importEntries = this.externals.filter(e => e.section === 'import');
         const exportEntries = this.externals.filter(e => e.section === 'export');
         const importFuncCount = importEntries.filter(e => e.kind === 'function').length;

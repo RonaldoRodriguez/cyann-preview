@@ -11,7 +11,7 @@ import {
 import { MathType } from './types';
 import { preprocessWithSourceMap } from './preprocessor';
 import { formatDiagnostic } from './diagnostics';
-// if (stmt.kind !== 'module_import') continue;
+//  if (type.kind === 'type_param') return type;
 interface LoadedModule {
   path: string;
   program: ProgramNode;
@@ -93,11 +93,11 @@ export class ModuleLoader {
       for (const stmt of program.body) {
         if (stmt.kind !== 'module_import') continue;
         const declaration = stmt as ModuleImportNode;
-        
+
         // Limpiamos y normalizamos las barras invertidas para evitar errores en Windows con '..'
         const normalizedImportPath = declaration.path.replace(/\\/g, '/');
         const targetPath = path.normalize(path.resolve(path.dirname(resolvedPath), normalizedImportPath));
-        
+
         let target: LoadedModule;
         try {
           target = await this.loadModule(targetPath);
@@ -173,7 +173,7 @@ export class ModuleLoader {
         if (!declaration.symbol) continue;
         const exported = this.exportedSymbol(target, declaration.symbol);
         if (!exported) continue;
-        
+
         if (exported.kind === 'function') {
           module.functionNames.set(declaration.symbol, target.functionNames.get(exported.name)!);
         } else if (exported.kind === 'global') {
@@ -279,7 +279,7 @@ export class ModuleLoader {
     return names;
   }
 
-private exportedSymbol(
+  private exportedSymbol(
     module: LoadedModule,
     symbol: string,
   ): { kind: 'function' | 'global' | 'type' | 'namespace'; name: string; targetModule?: LoadedModule } | null {
@@ -306,7 +306,7 @@ private exportedSymbol(
     );
     if (type) return { kind: 'type', name: type.name };
 
-    // 4. NUEVO: Buscar en namespaces re-exportados (export import ... as symbol)
+    // 4. Buscar en namespaces re-exportados (export import ... as symbol)
     const nsImport = module.imports.find(
       item => item.declaration.alias === symbol && (item.declaration as any).exported === true,
     );
@@ -316,7 +316,7 @@ private exportedSymbol(
 
     return null;
   }
-// for (const module of this.order) {
+
   private checkTopLevelName(
     declarations: Map<string, string>,
     duplicates: Set<string>,
@@ -392,6 +392,22 @@ private exportedSymbol(
           this.resolveQualifiedName(module, type, 'type');
         return rewritten === undefined ? type : rewritten as MathType;
       }
+      // ── Type params y generic instances no se reescriben ─────────
+      // Un `T` de una plantilla genérica es local a la plantilla: no
+      // está en `module.typeNames` y no debe ser reescrito. Si lo
+      // dejamos caer por el switch sin case, la función retorna
+      // undefined y rompe toda la plantilla.
+        if (type.kind === 'type_param') return type;
+        if (type.kind === 'generic_instance') {
+          return {
+            ...type,
+            baseName: module.typeNames.get(type.baseName) ??
+              this.resolveQualifiedName(module, type.baseName, 'type') ??
+              type.baseName,
+            typeArgs: type.typeArgs.map(rewriteType),
+          };
+        }
+      // ─────────────────────────────────────────────────────────────
       switch (type.kind) {
         case 'array':
         case 'dynarray':
@@ -412,6 +428,10 @@ private exportedSymbol(
               type.name,
             fields: type.fields.map(field => ({ ...field, type: rewriteType(field.type) })),
           };
+        default: {
+          const _exhaustive: never = type;
+          throw new Error(`rewriteType: tipo no soportado: ${JSON.stringify(_exhaustive)}`);
+        }
       }
     };
 
@@ -422,6 +442,17 @@ private exportedSymbol(
       }
       if (!value || typeof value !== 'object') return;
       const node = value as Record<string, unknown>;
+
+      // ── NUEVO: reescribir typeArgs explícitamente ────────────────
+      // `typeArgs` es un array de MathType. Sin este tratamiento, un
+      // type arg que sea `{kind:'struct', name:'MyStruct'}` NO vería
+      // su `name` resuelto al prefijo `__module_N_MyStruct`, y la
+      // plantilla no podría instanciarse con ese tipo. Los type args
+      // primitivos (strings) son no-op.
+      if (Array.isArray(node.typeArgs)) {
+        node.typeArgs = (node.typeArgs as MathType[]).map(rewriteType);
+      }
+      // ─────────────────────────────────────────────────────────────
 
       if (
         node.kind === 'call' &&
@@ -465,7 +496,7 @@ private exportedSymbol(
           this.resolveQualifiedName(module, node.identName, 'type') ??
           this.resolveQualifiedName(module, node.identName, 'global') ??
           module.globalNames.get(node.identName);
-        
+
         if (resolvedType) {
           node.identName = resolvedType;
         } else if (node.identName.includes('::')) {
@@ -510,7 +541,8 @@ private exportedSymbol(
       for (const [key, child] of Object.entries(node)) {
         if (key === 'kind' || key === 'type' || key === 'targetType' ||
             key === 'elementType' || key === 'typeExpr' ||
-            key === 'paramTypes' || key === 'returnTypes') continue;
+            key === 'paramTypes' || key === 'returnTypes' ||
+            key === 'typeArgs') continue;  // ← typeArgs ya se manejó arriba
         rewriteExpr(child);
       }
     };
@@ -523,15 +555,16 @@ private exportedSymbol(
               if (!stmt.receiver) {
                 const sourceName = stmt.name;
                 stmt.name = module.functionNames.get(sourceName) ?? sourceName;
-                stmt.wasmExport = !!stmt.exported;
-                if (stmt.exported) {
-                  const publicName = stmt.exportName ?? sourceName;
-                  const modulePath = path.relative(this.entryDirectory, module.path)
-                    .split(path.sep)
-                    .join('/');
-                  stmt.wasmExportName = module.entry
-                    ? publicName
-                    : `${modulePath}::${publicName}`;
+
+                // ── Sólo el módulo de entrada expone sus símbolos al exterior ──
+                // Las librerías (std.cyn, heap.cyn, …) usan `export` sólo para
+                // que otros módulos puedan importarlas en tiempo de compilación;
+                // esos símbolos NO deben aparecer en la tabla de exports del .wasm.
+                stmt.wasmExport = !!stmt.exported && module.entry;
+                if (stmt.wasmExport) {
+                  stmt.wasmExportName = stmt.exportName ?? sourceName;
+                } else {
+                  stmt.wasmExportName = undefined;
                 }
               }
             }
@@ -559,15 +592,13 @@ private exportedSymbol(
             if (topLevel) {
               const sourceName = stmt.name;
               stmt.name = module.globalNames.get(sourceName) ?? sourceName;
-              stmt.wasmExport = !!stmt.exported;
-              if (stmt.exported) {
-                const publicName = stmt.exportName ?? sourceName;
-                const modulePath = path.relative(this.entryDirectory, module.path)
-                  .split(path.sep)
-                  .join('/');
-                stmt.wasmExportName = module.entry
-                  ? publicName
-                  : `${modulePath}::${publicName}`;
+
+              // Mismo criterio que con funciones: sólo el entry exporta al .wasm.
+              stmt.wasmExport = !!stmt.exported && module.entry;
+              if (stmt.wasmExport) {
+                stmt.wasmExportName = stmt.exportName ?? sourceName;
+              } else {
+                stmt.wasmExportName = undefined;
               }
             } else {
               declareLocal(stmt.name);

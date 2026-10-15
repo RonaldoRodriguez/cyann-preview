@@ -192,4 +192,3 @@ export function simdWatName(name: string): string {
     if (idx === -1) return name.toLowerCase();
     return name.slice(0, idx).toLowerCase() + '.' + name.slice(idx + 1).toLowerCase();
 }
-
